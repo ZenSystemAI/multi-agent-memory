@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: shared-brain-qdrant
+    ports:
+      - "6334:6333"
+      - "6335:6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  memory-api:
+    build: ./api
+    container_name: shared-brain-api
+    ports:
+      - "8084:8084"
+    env_file:
+      - .env
+    networks:
+      - default
+      - baserow-stack_default
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  baserow-stack_default:
+    external: true

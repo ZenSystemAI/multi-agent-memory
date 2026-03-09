@@ -1,0 +1,13 @@
+{
+  "name": "shared-brain-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server for Shared Brain memory system",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

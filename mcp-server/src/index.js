@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -5,7 +6,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-const API_URL = process.env.BRAIN_API_URL || 'http://192.168.18.40:8084';
+const API_URL = process.env.BRAIN_API_URL || 'http://localhost:8084';
 const API_KEY = process.env.BRAIN_API_KEY || '';
 
 async function apiRequest(path, options = {}) {
@@ -33,14 +34,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'brain_store',
-      description: 'Store a memory in the Shared Brain. Use this to record events (something happened), facts (persistent knowledge), decisions (choices made and why), or status updates (current state of systems/workflows). All agents share this memory.',
+      description: 'Store a memory in the Shared Brain. Use this to record events (something happened), facts (persistent knowledge), decisions (choices made and why), or status updates (current state of systems/workflows). All agents share this memory. Duplicate content is automatically detected and deduplicated. Facts and statuses with matching keys/subjects automatically supersede older versions.',
       inputSchema: {
         type: 'object',
         properties: {
           type: {
             type: 'string',
             enum: ['event', 'fact', 'decision', 'status'],
-            description: 'Memory type. event=something happened (append-only), fact=persistent knowledge (upsertable), decision=choice made and why (append-only), status=current state (update in place)',
+            description: 'Memory type. event=something happened (append-only), fact=persistent knowledge (upsertable by key), decision=choice made and why (append-only), status=current state (update in place by subject)',
           },
           content: {
             type: 'string',
@@ -48,12 +49,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           source_agent: {
             type: 'string',
-            enum: ['claude-code', 'antigravity', 'morpheus', 'n8n'],
-            description: 'Which agent is storing this memory',
+            description: 'Identifier for the agent storing this memory (e.g. "claude-code", "my-agent", "n8n")',
           },
           client_id: {
             type: 'string',
-            description: 'Client slug (e.g. "jetloans") or "global" for system-wide memories. Default: global',
+            description: 'Project or client slug (e.g. "acme-corp") or "global" for system-wide memories. Default: global',
           },
           category: {
             type: 'string',
@@ -67,11 +67,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           key: {
             type: 'string',
-            description: 'For facts only: unique key for upsert (e.g. "jetloans-gsc-status")',
+            description: 'For facts only: unique key for upsert (e.g. "acme-api-status"). When a fact with this key exists, the new one supersedes it.',
           },
           subject: {
             type: 'string',
-            description: 'For status only: what system/workflow this status is about',
+            description: 'For status only: what system/workflow this status is about. When a status with this subject exists, the new one supersedes it.',
           },
           status_value: {
             type: 'string',
@@ -83,7 +83,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'brain_search',
-      description: 'Semantic search across all shared memories from all agents. Use natural language queries like "what do we know about the newsletter pipeline" or "recent changes to n8n workflows".',
+      description: 'Semantic search across all shared memories from all agents. Results are ranked by similarity * confidence (memories that haven\'t been accessed recently have lower confidence due to time decay). Superseded memories are excluded by default.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -107,6 +107,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           limit: {
             type: 'number',
             description: 'Max results (default 10)',
+          },
+          include_superseded: {
+            type: 'boolean',
+            description: 'Set to true to include superseded memories in results (default: false)',
           },
         },
         required: ['query'],
@@ -137,7 +141,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'brain_query',
-      description: 'Structured query of shared memories via Baserow. Query facts by key, statuses by subject, or events by time range. Use brain_search for semantic queries instead.',
+      description: 'Structured query of shared memories via the database. Query facts by key, statuses by subject, or events by time range. Use brain_search for semantic queries instead.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -154,6 +158,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           subject: { type: 'string', description: 'For statuses: search by subject' },
         },
         required: ['type'],
+      },
+    },
+    {
+      name: 'brain_stats',
+      description: 'Get memory health stats: total memories, active vs superseded, consolidated, decayed, breakdown by type. Use this to understand the state of the shared brain.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'brain_consolidate',
+      description: 'Trigger a memory consolidation run. An LLM analyzes unconsolidated memories to find duplicates to merge, contradictions to flag, connections between memories, and cross-memory insights. Runs automatically on a schedule, but can be triggered manually.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['run', 'status'],
+            description: 'run=trigger consolidation now, status=check consolidation status. Default: run',
+          },
+        },
       },
     },
   ],
@@ -189,6 +215,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.source_agent) params.append('source_agent', args.source_agent);
         if (args.client_id) params.append('client_id', args.client_id);
         if (args.limit) params.append('limit', String(args.limit));
+        if (args.include_superseded) params.append('include_superseded', 'true');
         result = await apiRequest(`/memory/search?${params}`);
         break;
       }
@@ -212,6 +239,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         result = await apiRequest(`/memory/query?${params}`);
         break;
       }
+
+      case 'brain_stats':
+        result = await apiRequest('/stats');
+        break;
+
+      case 'brain_consolidate':
+        if (args.action === 'status') {
+          result = await apiRequest('/consolidate/status');
+        } else {
+          result = await apiRequest('/consolidate', { method: 'POST' });
+        }
+        break;
 
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

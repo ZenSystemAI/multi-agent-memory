@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { scrollPoints, getCollectionInfo } from '../services/qdrant.js';
-import { listEvents, listFacts, listStatuses } from '../services/baserow.js';
+import { scrollPoints, getCollectionInfo, computeEffectiveConfidence } from '../services/qdrant.js';
+// Briefing primarily uses Qdrant — structured store imports kept for potential future use
 
 export const briefingRouter = Router();
 
@@ -46,6 +46,7 @@ briefingRouter.get('/', async (req, res) => {
         client_id: p.client_id,
         category: p.category,
         importance: p.importance,
+        confidence: computeEffectiveConfidence(p),
         created_at: p.created_at,
       };
 

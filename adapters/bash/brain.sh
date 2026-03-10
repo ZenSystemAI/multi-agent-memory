@@ -2,16 +2,16 @@
 set -euo pipefail
 
 # === Config ===
-API_URL="http://192.168.18.40:8084"
-SOURCE_AGENT="morpheus"
+API_URL="${BRAIN_API_URL:-http://localhost:8084}"
+SOURCE_AGENT="${BRAIN_AGENT_NAME:-my-agent}"
 
-# Load API key from .env
-if [ -f ~/.openclaw/.env ]; then
-  export $(grep -E 'BRAIN_API_KEY' ~/.openclaw/.env | xargs)
+# Load API key from environment or .env file
+if [ -z "${BRAIN_API_KEY:-}" ] && [ -f "${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}" ]; then
+  export $(grep -E 'BRAIN_API_KEY' "${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}" | xargs)
 fi
 
 if [ -z "${BRAIN_API_KEY:-}" ]; then
-  echo "ERROR: BRAIN_API_KEY not set in ~/.openclaw/.env" >&2
+  echo "ERROR: BRAIN_API_KEY not set. Set it as env var or in ${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}" >&2
   exit 2
 fi
 
@@ -19,7 +19,7 @@ AUTH_HEADER="X-Api-Key: ${BRAIN_API_KEY}"
 
 # === Subcommand ===
 if [ $# -lt 1 ]; then
-  echo "Usage: brain.sh {store|search|briefing|query} [options]" >&2
+  echo "Usage: brain.sh {store|search|briefing|query|stats|consolidate} [options]" >&2
   exit 1
 fi
 
@@ -59,7 +59,6 @@ case "$CMD" in
       exit 1
     fi
 
-    # Build JSON payload with jq (handles escaping safely)
     PAYLOAD=$(jq -n \
       --arg type "$TYPE" \
       --arg content "$CONTENT" \
@@ -90,9 +89,8 @@ case "$CMD" in
     if echo "$RESPONSE" | jq -e '.id' > /dev/null 2>&1; then
       ID=$(echo "$RESPONSE" | jq -r '.id')
       HASH=$(echo "$RESPONSE" | jq -r '.content_hash')
-      QDRANT=$(echo "$RESPONSE" | jq -r '.stored_in.qdrant')
-      BASEROW=$(echo "$RESPONSE" | jq -r '.stored_in.baserow')
-      echo "Stored in Shared Brain (id: ${ID}, hash: ${HASH}, qdrant: ${QDRANT}, baserow: ${BASEROW})"
+      DEDUP=$(echo "$RESPONSE" | jq -r '.deduplicated')
+      echo "Stored in Shared Brain (id: ${ID}, hash: ${HASH}, deduplicated: ${DEDUP})"
     else
       echo "ERROR: Store failed" >&2
       echo "$RESPONSE" | head -c 300 >&2
@@ -106,7 +104,6 @@ case "$CMD" in
       exit 1
     fi
 
-    # Build query string
     QS="q=$(jq -rn --arg q "$QUERY" '$q | @uri')"
     [ -n "$TYPE" ] && QS="${QS}&type=${TYPE}"
     [ -n "$SOURCE" ] && QS="${QS}&source_agent=${SOURCE}"
@@ -125,7 +122,7 @@ case "$CMD" in
     echo "[SHARED_BRAIN_START]"
     echo "Query: ${QUERY} — ${COUNT} results"
     echo ""
-    echo "$RESPONSE" | jq -r '.results[] | "---\n[\(.source_agent)] [\(.type)] [\(.importance)] \(.created_at)\nClient: \(.client_id)\n\(.text)\n"'
+    echo "$RESPONSE" | jq -r '.results[] | "---\n[\(.source_agent)] [\(.type)] [\(.importance)] score:\(.effective_score) \(.created_at)\nClient: \(.client_id)\n\(.text)\n"'
     echo "[SHARED_BRAIN_END]"
     ;;
 
@@ -159,28 +156,24 @@ case "$CMD" in
     echo "Agents active: ${AGENTS}"
     echo ""
 
-    # Show events
     if [ "$EVENTS" != "0" ]; then
       echo "=== Events ==="
       echo "$RESPONSE" | jq -r '.events[] | "[\(.source_agent)] \(.created_at): \(.content)"'
       echo ""
     fi
 
-    # Show facts
     if [ "$FACTS" != "0" ]; then
       echo "=== Facts Updated ==="
       echo "$RESPONSE" | jq -r '.facts_updated[] | "[\(.source_agent)] \(.client_id): \(.content)"'
       echo ""
     fi
 
-    # Show status changes
     if [ "$STATUSES" != "0" ]; then
       echo "=== Status Changes ==="
       echo "$RESPONSE" | jq -r '.status_changes[] | "[\(.source_agent)] \(.content)"'
       echo ""
     fi
 
-    # Show decisions
     if [ "$DECISIONS" != "0" ]; then
       echo "=== Decisions ==="
       echo "$RESPONSE" | jq -r '.decisions[] | "[\(.source_agent)] \(.content)"'
@@ -218,9 +211,19 @@ case "$CMD" in
     echo "[/SHARED_BRAIN_QUERY]"
     ;;
 
+  stats)
+    RESPONSE=$(curl -s --max-time 15 -H "${AUTH_HEADER}" "${API_URL}/stats")
+    echo "$RESPONSE" | jq .
+    ;;
+
+  consolidate)
+    RESPONSE=$(curl -s --max-time 30 -X POST -H "${AUTH_HEADER}" "${API_URL}/consolidate")
+    echo "$RESPONSE" | jq .
+    ;;
+
   *)
     echo "Unknown command: $CMD" >&2
-    echo "Usage: brain.sh {store|search|briefing|query} [options]" >&2
+    echo "Usage: brain.sh {store|search|briefing|query|stats|consolidate} [options]" >&2
     exit 1
     ;;
 

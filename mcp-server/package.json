@@ -1,12 +1,33 @@
 {
-  "name": "shared-brain-mcp",
+  "name": "@zensystemai/multi-agent-memory-mcp",
   "version": "1.0.0",
   "type": "module",
-  "description": "MCP server for Shared Brain memory system",
+  "description": "MCP server for Multi-Agent Memory - cross-agent persistent memory system",
   "main": "src/index.js",
+  "bin": {
+    "multi-agent-memory-mcp": "src/index.js"
+  },
+  "files": [
+    "src/"
+  ],
   "scripts": {
     "start": "node src/index.js"
   },
+  "keywords": [
+    "mcp",
+    "memory",
+    "ai",
+    "agent",
+    "multi-agent",
+    "llm"
+  ],
+  "author": "ZenSystem",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZenSystemAI/multi-agent-memory.git"
+  },
+  "homepage": "https://github.com/ZenSystemAI/multi-agent-memory",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   }

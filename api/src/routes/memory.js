@@ -1,8 +1,13 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { embed } from '../services/embeddings.js';
-import { upsertPoint, searchPoints } from '../services/qdrant.js';
-import { createEvent, upsertFact, upsertStatus, listEvents, listFacts, listStatuses } from '../services/baserow.js';
+import { embed } from '../services/embedders/interface.js';
+import {
+  upsertPoint, searchPoints, updatePointPayload,
+  findByPayload, computeEffectiveConfidence,
+} from '../services/qdrant.js';
+import {
+  createEvent, upsertFact, upsertStatus, listEvents, listFacts, listStatuses, isStoreAvailable,
+} from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
 
 export const memoryRouter = Router();
@@ -17,7 +22,6 @@ memoryRouter.post('/', async (req, res) => {
       return res.status(400).json({
         error: 'Missing required fields: type, content, source_agent',
         valid_types: ['event', 'fact', 'decision', 'status'],
-        valid_agents: ['claude-code', 'antigravity', 'morpheus', 'n8n'],
       });
     }
 
@@ -31,9 +35,52 @@ memoryRouter.post('/', async (req, res) => {
     // Generate content hash for dedup
     const contentHash = crypto.createHash('sha256').update(cleanContent).digest('hex').slice(0, 16);
 
-    // Generate point ID
-    const pointId = crypto.randomUUID();
+    // --- Deduplication check ---
+    const duplicates = await findByPayload('content_hash', contentHash, { active: true });
+    if (duplicates.length > 0) {
+      const existing = duplicates[0];
+      return res.status(200).json({
+        id: existing.id,
+        type: existing.payload.type,
+        content_hash: contentHash,
+        deduplicated: true,
+        message: 'Exact duplicate detected — returning existing memory',
+        stored_in: { qdrant: true, structured_db: true },
+      });
+    }
+
     const now = new Date().toISOString();
+    const pointId = crypto.randomUUID();
+
+    // --- Supersedes logic for facts and statuses ---
+    let supersedesId = null;
+
+    if (type === 'fact' && req.body.key) {
+      // Find existing active fact with same key
+      const existing = await findByPayload('type', 'fact', { active: true });
+      const match = existing.find(p => p.payload.key === req.body.key);
+      if (match) {
+        supersedesId = match.id;
+        // Mark old point as superseded
+        await updatePointPayload(match.id, {
+          active: false,
+          superseded_by: pointId,
+          superseded_at: now,
+        });
+      }
+    } else if (type === 'status' && req.body.subject) {
+      // Find existing active status with same subject
+      const existing = await findByPayload('type', 'status', { active: true });
+      const match = existing.find(p => p.payload.subject === req.body.subject);
+      if (match) {
+        supersedesId = match.id;
+        await updatePointPayload(match.id, {
+          active: false,
+          superseded_by: pointId,
+          superseded_at: now,
+        });
+      }
+    }
 
     // Build payload
     const payload = {
@@ -45,8 +92,15 @@ memoryRouter.post('/', async (req, res) => {
       importance: importance || 'medium',
       content_hash: contentHash,
       created_at: now,
+      last_accessed_at: now,
       access_count: 0,
+      confidence: 1.0,
+      active: true,
       consolidated: false,
+      supersedes: supersedesId,
+      superseded_by: null,
+      ...(type === 'fact' && req.body.key ? { key: req.body.key } : {}),
+      ...(type === 'status' && req.body.subject ? { subject: req.body.subject, status_value: req.body.status_value } : {}),
       ...(metadata ? { metadata } : {}),
     };
 
@@ -54,8 +108,8 @@ memoryRouter.post('/', async (req, res) => {
     const vector = await embed(cleanContent);
     await upsertPoint(pointId, vector, payload);
 
-    // Store in Baserow (structured)
-    const baserowData = {
+    // Store in structured database (if configured)
+    const storeData = {
       content: cleanContent,
       source_agent,
       client_id: client_id || 'global',
@@ -65,32 +119,36 @@ memoryRouter.post('/', async (req, res) => {
       created_at: now,
     };
 
-    let baserowResult = null;
-    try {
-      if (type === 'event' || type === 'decision') {
-        baserowData.type = type;
-        baserowResult = await createEvent(baserowData);
-      } else if (type === 'fact') {
-        baserowData.key = req.body.key || contentHash;
-        baserowData.value = cleanContent;
-        baserowResult = await upsertFact(baserowData);
-      } else if (type === 'status') {
-        baserowData.subject = req.body.subject || 'unknown';
-        baserowData.status = req.body.status_value || cleanContent;
-        baserowResult = await upsertStatus(baserowData);
+    let storeResult = null;
+    if (isStoreAvailable()) {
+      try {
+        if (type === 'event' || type === 'decision') {
+          storeData.type = type;
+          storeResult = await createEvent(storeData);
+        } else if (type === 'fact') {
+          storeData.key = req.body.key || contentHash;
+          storeData.value = cleanContent;
+          storeResult = await upsertFact(storeData);
+        } else if (type === 'status') {
+          storeData.subject = req.body.subject || 'unknown';
+          storeData.status = req.body.status_value || cleanContent;
+          storeResult = await upsertStatus(storeData);
+        }
+      } catch (storeErr) {
+        // Qdrant succeeded, structured store failed — log but don't fail the request
+        console.error('[store] Write failed (Qdrant succeeded):', storeErr.message);
       }
-    } catch (baserowErr) {
-      // Qdrant succeeded, Baserow failed — log but don't fail the request
-      console.error('[baserow] Write failed (Qdrant succeeded):', baserowErr.message);
     }
 
     res.status(201).json({
       id: pointId,
       type,
       content_hash: contentHash,
+      deduplicated: false,
+      supersedes: supersedesId,
       stored_in: {
         qdrant: true,
-        baserow: !!baserowResult,
+        structured_db: !!storeResult,
       },
     });
   } catch (err) {
@@ -102,7 +160,7 @@ memoryRouter.post('/', async (req, res) => {
 // GET /memory/search — Semantic search via Qdrant
 memoryRouter.get('/search', async (req, res) => {
   try {
-    const { q, type, source_agent, client_id, category, limit } = req.query;
+    const { q, type, source_agent, client_id, category, limit, include_superseded } = req.query;
 
     if (!q) {
       return res.status(400).json({ error: 'Missing required query parameter: q' });
@@ -115,17 +173,49 @@ memoryRouter.get('/search', async (req, res) => {
     if (source_agent) filter.source_agent = source_agent;
     if (client_id) filter.client_id = client_id;
     if (category) filter.category = category;
+    // By default, only return active memories (not superseded)
+    if (include_superseded !== 'true') filter.active = true;
 
-    const results = await searchPoints(vector, filter, parseInt(limit) || 10);
+    const rawResults = await searchPoints(vector, filter, parseInt(limit) || 10);
+
+    // Apply confidence decay and re-rank
+    const results = rawResults.map(r => {
+      const effectiveConfidence = computeEffectiveConfidence(r.payload);
+      return {
+        id: r.id,
+        score: r.score,
+        confidence: effectiveConfidence,
+        effective_score: +(r.score * effectiveConfidence).toFixed(4),
+        ...r.payload,
+      };
+    });
+
+    // Re-sort by effective_score
+    results.sort((a, b) => b.effective_score - a.effective_score);
+
+    // Async: increment access_count and update last_accessed_at for returned results
+    const pointIds = results.map(r => r.id);
+    if (pointIds.length > 0) {
+      // Fire and forget — don't slow down the response
+      Promise.resolve().then(async () => {
+        try {
+          const now = new Date().toISOString();
+          for (const result of results) {
+            await updatePointPayload(result.id, {
+              access_count: (result.access_count || 0) + 1,
+              last_accessed_at: now,
+            });
+          }
+        } catch (e) {
+          console.error('[memory:search] Access count update failed:', e.message);
+        }
+      });
+    }
 
     res.json({
       query: q,
       count: results.length,
-      results: results.map(r => ({
-        id: r.id,
-        score: r.score,
-        ...r.payload,
-      })),
+      results,
     });
   } catch (err) {
     console.error('[memory:search] Error:', err.message);
@@ -133,9 +223,15 @@ memoryRouter.get('/search', async (req, res) => {
   }
 });
 
-// GET /memory/query — Structured query via Baserow
+// GET /memory/query — Structured query via database
 memoryRouter.get('/query', async (req, res) => {
   try {
+    if (!isStoreAvailable()) {
+      return res.status(400).json({
+        error: 'Structured queries require a database backend. Set STRUCTURED_STORE in .env (sqlite, postgres, or baserow).',
+      });
+    }
+
     const { type, source_agent, category, client_id, since, key, subject } = req.query;
 
     let results;

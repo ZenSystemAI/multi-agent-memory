@@ -43,13 +43,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://192.168.18.40:8084/webhook/n8n",
+        "url": "http://localhost:8084/webhook/n8n",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "X-Api-Key",
-              "value": "0e8240089147492fa506ac06962667865137902ad90fed75eef5f9fe7366c062"
+              "value": "YOUR_BRAIN_API_KEY"
             }
           ]
         },

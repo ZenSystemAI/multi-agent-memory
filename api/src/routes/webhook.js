@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { embed } from '../services/embeddings.js';
+import { embed } from '../services/embedders/interface.js';
 import { upsertPoint } from '../services/qdrant.js';
-import { createEvent, upsertStatus } from '../services/baserow.js';
+import { createEvent, upsertStatus, isStoreAvailable } from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
 
 export const webhookRouter = Router();
@@ -29,8 +29,8 @@ webhookRouter.post('/n8n', async (req, res) => {
           workflow_id: 'abc123',
           execution_id: 'exec_456',
           status: 'success',
-          message: 'Updated 42 keywords for jetloans.ca',
-          client_id: 'jetloans',
+          message: 'Updated 42 keywords for acme-corp.com',
+          client_id: 'acme-corp',
           items_processed: 42,
         },
       });
@@ -61,8 +61,13 @@ webhookRouter.post('/n8n', async (req, res) => {
       importance: status === 'error' ? 'high' : 'medium',
       content_hash: contentHash,
       created_at: now,
+      last_accessed_at: now,
       access_count: 0,
+      confidence: 1.0,
+      active: true,
       consolidated: false,
+      supersedes: null,
+      superseded_by: null,
       metadata: {
         workflow_name,
         workflow_id: workflow_id || null,
@@ -72,8 +77,8 @@ webhookRouter.post('/n8n', async (req, res) => {
       },
     });
 
-    // Store as event in Baserow
-    try {
+    // Store as event in structured database
+    if (isStoreAvailable()) try {
       await createEvent({
         content,
         type: 'event',
@@ -85,7 +90,7 @@ webhookRouter.post('/n8n', async (req, res) => {
         created_at: now,
       });
     } catch (e) {
-      console.error('[webhook:n8n] Baserow write failed:', e.message);
+      console.error('[webhook:n8n] Store write failed:', e.message);
     }
 
     // If workflow errored, also update status

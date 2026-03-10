@@ -25,9 +25,8 @@ services:
       - "8084:8084"
     env_file:
       - .env
-    networks:
-      - default
-      - baserow-stack_default
+    volumes:
+      - ./data:/app/data
     depends_on:
       - qdrant
     restart: unless-stopped
@@ -37,6 +36,18 @@ services:
         max-size: "10m"
         max-file: "3"
 
-networks:
-  baserow-stack_default:
-    external: true
+  # Optional: PostgreSQL for production structured storage
+  # Enable with: docker-compose --profile postgres up
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    container_name: shared-brain-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: shared_brain
+      POSTGRES_USER: brain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brain_secret}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped

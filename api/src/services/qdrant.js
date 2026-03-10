@@ -1,8 +1,12 @@
-import { EMBEDDING_DIMS } from './embeddings.js';
+import { getEmbeddingDimensions } from './embedders/interface.js';
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333';
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
 const COLLECTION = 'shared_memories';
+
+// Memory decay config
+const DECAY_FACTOR = parseFloat(process.env.DECAY_FACTOR) || 0.98;
+const DECAY_TYPES = ['fact', 'status']; // events and decisions are historical — don't decay
 
 async function qdrantRequest(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -26,11 +30,12 @@ export async function initQdrant() {
     // Collection doesn't exist, create it
   }
 
+  const embeddingDims = getEmbeddingDimensions();
   await qdrantRequest('/collections/' + COLLECTION, {
     method: 'PUT',
     body: JSON.stringify({
       vectors: {
-        size: EMBEDDING_DIMS,
+        size: embeddingDims,
         distance: 'Cosine',
       },
       optimizers_config: {
@@ -40,17 +45,39 @@ export async function initQdrant() {
   });
 
   // Create payload indices for common filters
-  for (const field of ['type', 'source_agent', 'client_id', 'category', 'importance']) {
+  const keywordFields = ['type', 'source_agent', 'client_id', 'category', 'importance', 'content_hash'];
+  for (const field of keywordFields) {
     await qdrantRequest(`/collections/${COLLECTION}/index`, {
       method: 'PUT',
       body: JSON.stringify({ field_name: field, field_schema: 'Keyword' }),
     });
   }
 
+  // Boolean index for active/inactive filtering
   await qdrantRequest(`/collections/${COLLECTION}/index`, {
     method: 'PUT',
-    body: JSON.stringify({ field_name: 'created_at', field_schema: { type: 'datetime', is_tenant: false } }),
+    body: JSON.stringify({ field_name: 'active', field_schema: 'Bool' }),
   });
+
+  // Float index for confidence scoring
+  await qdrantRequest(`/collections/${COLLECTION}/index`, {
+    method: 'PUT',
+    body: JSON.stringify({ field_name: 'confidence', field_schema: 'Float' }),
+  });
+
+  // Integer index for access count
+  await qdrantRequest(`/collections/${COLLECTION}/index`, {
+    method: 'PUT',
+    body: JSON.stringify({ field_name: 'access_count', field_schema: 'Integer' }),
+  });
+
+  // Datetime indices
+  for (const field of ['created_at', 'last_accessed_at']) {
+    await qdrantRequest(`/collections/${COLLECTION}/index`, {
+      method: 'PUT',
+      body: JSON.stringify({ field_name: field, field_schema: { type: 'datetime', is_tenant: false } }),
+    });
+  }
 
   console.log(`[qdrant] Collection '${COLLECTION}' created with indices`);
 }
@@ -75,7 +102,7 @@ export async function searchPoints(vector, filter = {}, limit = 10) {
   if (Object.keys(filter).length > 0) {
     body.filter = { must: [] };
     for (const [key, value] of Object.entries(filter)) {
-      if (value) {
+      if (value !== undefined && value !== null) {
         body.filter.must.push({ key, match: { value } });
       }
     }
@@ -117,3 +144,94 @@ export async function getCollectionInfo() {
   const result = await qdrantRequest(`/collections/${COLLECTION}`);
   return result.result;
 }
+
+// Update payload fields on existing points (partial update)
+export async function updatePointPayload(pointIds, payload) {
+  const ids = Array.isArray(pointIds) ? pointIds : [pointIds];
+  return qdrantRequest(`/collections/${COLLECTION}/points/payload`, {
+    method: 'POST',
+    body: JSON.stringify({ payload, points: ids }),
+  });
+}
+
+// Find points by exact payload field match
+export async function findByPayload(field, value, extraFilter = {}, limit = 10) {
+  const must = [{ key: field, match: { value } }];
+  for (const [key, val] of Object.entries(extraFilter)) {
+    if (val !== undefined && val !== null) {
+      if (typeof val === 'boolean') {
+        must.push({ key, match: { value: val } });
+      } else {
+        must.push({ key, match: { value: val } });
+      }
+    }
+  }
+
+  const result = await qdrantRequest(`/collections/${COLLECTION}/points/scroll`, {
+    method: 'POST',
+    body: JSON.stringify({
+      filter: { must },
+      limit,
+      with_payload: true,
+    }),
+  });
+  return (result.result || {}).points || [];
+}
+
+// Compute effective confidence with time decay
+export function computeEffectiveConfidence(payload) {
+  if (!DECAY_TYPES.includes(payload.type)) return payload.confidence || 1.0;
+
+  const baseConfidence = payload.confidence || 1.0;
+  const lastAccess = payload.last_accessed_at || payload.created_at;
+  if (!lastAccess) return baseConfidence;
+
+  const daysSinceAccess = (Date.now() - new Date(lastAccess).getTime()) / (1000 * 60 * 60 * 24);
+  return baseConfidence * Math.pow(DECAY_FACTOR, daysSinceAccess);
+}
+
+// Get memory stats across the collection
+export async function getMemoryStats() {
+  const info = await getCollectionInfo();
+
+  // Count by active/inactive
+  const activeResult = await qdrantRequest(`/collections/${COLLECTION}/points/count`, {
+    method: 'POST',
+    body: JSON.stringify({
+      filter: { must: [{ key: 'active', match: { value: true } }] },
+      exact: true,
+    }),
+  });
+
+  const consolidatedResult = await qdrantRequest(`/collections/${COLLECTION}/points/count`, {
+    method: 'POST',
+    body: JSON.stringify({
+      filter: { must: [{ key: 'consolidated', match: { value: true } }] },
+      exact: true,
+    }),
+  });
+
+  // Count by type
+  const typeCounts = {};
+  for (const type of ['event', 'fact', 'decision', 'status']) {
+    const r = await qdrantRequest(`/collections/${COLLECTION}/points/count`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { must: [{ key: 'type', match: { value: type } }] },
+        exact: true,
+      }),
+    });
+    typeCounts[type] = r.result?.count || 0;
+  }
+
+  return {
+    total_memories: info.points_count,
+    vectors_count: info.vectors_count,
+    active: activeResult.result?.count || 0,
+    superseded: (info.points_count || 0) - (activeResult.result?.count || 0),
+    consolidated: consolidatedResult.result?.count || 0,
+    by_type: typeCounts,
+  };
+}
+
+export { DECAY_TYPES };

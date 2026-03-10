@@ -1,5 +1,4 @@
-// Credential scrubbing before storing memories
-// Reuses pattern from Morpheus memory-store/store.sh
+// Credential scrubbing — redacts secrets before storing memories
 
 const PATTERNS = [
   // API keys and tokens

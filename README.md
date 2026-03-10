@@ -419,11 +419,13 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 ### Required
 
-| Variable | Description |
-|----------|-------------|
-| `BRAIN_API_KEY` | API key for authentication |
-| `QDRANT_URL` | Qdrant instance URL |
-| `QDRANT_API_KEY` | Qdrant API key |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BRAIN_API_KEY` | — | API key for authentication |
+| `QDRANT_URL` | — | Qdrant instance URL |
+| `QDRANT_API_KEY` | — | Qdrant API key |
+| `PORT` | `8084` | API server port |
+| `HOST` | `127.0.0.1` | Bind address. Set to `0.0.0.0` for LAN/Docker access. |
 
 ### Embedding Provider
 

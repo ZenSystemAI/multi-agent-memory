@@ -5,8 +5,8 @@ services:
     image: qdrant/qdrant:latest
     container_name: shared-brain-qdrant
     ports:
-      - "6334:6333"
-      - "6335:6334"
+      - "127.0.0.1:6334:6333"
+      - "127.0.0.1:6335:6334"
     volumes:
       - ./data/qdrant:/qdrant/storage
     environment:
@@ -22,9 +22,11 @@ services:
     build: ./api
     container_name: shared-brain-api
     ports:
-      - "8084:8084"
+      - "127.0.0.1:8084:8084"
     env_file:
       - .env
+    environment:
+      - HOST=0.0.0.0  # Must be 0.0.0.0 inside container for Docker port mapping
     volumes:
       - ./data:/app/data
     depends_on:
@@ -43,7 +45,7 @@ services:
     image: postgres:16-alpine
     container_name: shared-brain-postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: shared_brain
       POSTGRES_USER: brain

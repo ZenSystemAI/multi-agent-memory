@@ -13,6 +13,7 @@ import { runConsolidation } from './services/consolidation.js';
 
 const app = express();
 const PORT = process.env.PORT || 8084;
+const HOST = process.env.HOST || '127.0.0.1';
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -67,8 +68,8 @@ async function start() {
       console.log('[shared-brain] Consolidation disabled (CONSOLIDATION_ENABLED=false)');
     }
 
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`[shared-brain] Memory API running on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`[shared-brain] Memory API running on ${HOST}:${PORT}`);
     });
   } catch (err) {
     console.error('[shared-brain] Failed to start:', err.message);

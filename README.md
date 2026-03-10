@@ -570,5 +570,5 @@ MIT License. See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  Built by <a href="https://zensystem.ca">ZenSystem</a>
+  Built by ZenSystem
 </p>

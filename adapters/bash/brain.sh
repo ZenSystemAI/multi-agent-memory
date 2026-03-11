@@ -7,7 +7,11 @@ SOURCE_AGENT="${BRAIN_AGENT_NAME:-my-agent}"
 
 # Load API key from environment or .env file
 if [ -z "${BRAIN_API_KEY:-}" ] && [ -f "${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}" ]; then
-  export $(grep -E 'BRAIN_API_KEY' "${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}" | xargs)
+  while IFS='=' read -r key value; do
+    case "$key" in
+      BRAIN_API_KEY) export "$key=$value" ;;
+    esac
+  done < "${BRAIN_ENV_FILE:-$HOME/.config/multi-agent-memory/.env}"
 fi
 
 if [ -z "${BRAIN_API_KEY:-}" ]; then
@@ -105,10 +109,10 @@ case "$CMD" in
     fi
 
     QS="q=$(jq -rn --arg q "$QUERY" '$q | @uri')"
-    [ -n "$TYPE" ] && QS="${QS}&type=${TYPE}"
-    [ -n "$SOURCE" ] && QS="${QS}&source_agent=${SOURCE}"
-    [ -n "$CLIENT_ID" ] && [ "$CLIENT_ID" != "global" ] && QS="${QS}&client_id=${CLIENT_ID}"
-    [ -n "$CATEGORY" ] && QS="${QS}&category=${CATEGORY}"
+    [ -n "$TYPE" ] && QS="${QS}&type=$(echo -n "$TYPE" | jq -sRr @uri)"
+    [ -n "$SOURCE" ] && QS="${QS}&source_agent=$(echo -n "$SOURCE" | jq -sRr @uri)"
+    [ -n "$CLIENT_ID" ] && [ "$CLIENT_ID" != "global" ] && QS="${QS}&client_id=$(echo -n "$CLIENT_ID" | jq -sRr @uri)"
+    [ -n "$CATEGORY" ] && QS="${QS}&category=$(echo -n "$CATEGORY" | jq -sRr @uri)"
     [ -n "$LIMIT" ] && QS="${QS}&limit=${LIMIT}"
 
     RESPONSE=$(curl -s --max-time 15 -H "${AUTH_HEADER}" "${API_URL}/memory/search?${QS}")
@@ -185,13 +189,13 @@ case "$CMD" in
 
   query)
     QS=""
-    [ -n "$TYPE" ] && QS="type=${TYPE}"
-    [ -n "$SOURCE" ] && QS="${QS:+${QS}&}source_agent=${SOURCE}"
-    [ -n "$CLIENT_ID" ] && [ "$CLIENT_ID" != "global" ] && QS="${QS:+${QS}&}client_id=${CLIENT_ID}"
-    [ -n "$CATEGORY" ] && QS="${QS:+${QS}&}category=${CATEGORY}"
+    [ -n "$TYPE" ] && QS="type=$(echo -n "$TYPE" | jq -sRr @uri)"
+    [ -n "$SOURCE" ] && QS="${QS:+${QS}&}source_agent=$(echo -n "$SOURCE" | jq -sRr @uri)"
+    [ -n "$CLIENT_ID" ] && [ "$CLIENT_ID" != "global" ] && QS="${QS:+${QS}&}client_id=$(echo -n "$CLIENT_ID" | jq -sRr @uri)"
+    [ -n "$CATEGORY" ] && QS="${QS:+${QS}&}category=$(echo -n "$CATEGORY" | jq -sRr @uri)"
     [ -n "$SINCE" ] && QS="${QS:+${QS}&}since=$(jq -rn --arg s "$SINCE" '$s | @uri')"
-    [ -n "$KEY" ] && QS="${QS:+${QS}&}key=${KEY}"
-    [ -n "$SUBJECT" ] && QS="${QS:+${QS}&}subject=${SUBJECT}"
+    [ -n "$KEY" ] && QS="${QS:+${QS}&}key=$(echo -n "$KEY" | jq -sRr @uri)"
+    [ -n "$SUBJECT" ] && QS="${QS:+${QS}&}subject=$(echo -n "$SUBJECT" | jq -sRr @uri)"
 
     RESPONSE=$(curl -s --max-time 15 -H "${AUTH_HEADER}" "${API_URL}/memory/query?${QS}")
 

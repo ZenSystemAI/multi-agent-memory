@@ -7,7 +7,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 const API_URL = process.env.BRAIN_API_URL || 'http://localhost:8084';
-const API_KEY = process.env.BRAIN_API_KEY || '';
+const API_KEY = process.env.BRAIN_API_KEY;
+if (!API_KEY) {
+  console.error('[mcp] BRAIN_API_KEY environment variable is required');
+  process.exit(1);
+}
 
 async function apiRequest(path, options = {}) {
   const url = `${API_URL}${path}`;
@@ -17,12 +21,18 @@ async function apiRequest(path, options = {}) {
     ...options.headers,
   };
 
-  const res = await fetch(url, { ...options, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${options.method || 'GET'} ${path}: ${res.status} ${text}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { ...options, headers, signal: controller.signal });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API ${options.method || 'GET'} ${path}: ${res.status} ${text}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 const server = new Server(

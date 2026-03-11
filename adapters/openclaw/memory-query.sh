@@ -10,7 +10,11 @@ QDRANT_URL="http://127.0.0.1:6333"
 QDRANT_COLLECTION="memories"
 
 if [ -f ~/.openclaw/.env ]; then
-  export $(grep -E 'QDRANT_API_KEY|OPENAI_API_KEY|BRAIN_API_KEY|BRAIN_API_URL' ~/.openclaw/.env | xargs)
+  while IFS='=' read -r key value; do
+    case "$key" in
+      QDRANT_API_KEY|OPENAI_API_KEY|BRAIN_API_KEY|BRAIN_API_URL) export "$key=$value" ;;
+    esac
+  done < ~/.openclaw/.env
 fi
 
 if [ -z "${QDRANT_API_KEY:-}" ]; then
@@ -67,7 +71,7 @@ fi
 EMBEDDING=$(echo "$EMBED_RESPONSE" | jq -c '.data[0].embedding')
 
 # === Query local Qdrant ===
-FILTER="{\"must\": [{\"key\": \"client_id\", \"match\": {\"value\": \"${CLIENT_ID}\"}}]}"
+FILTER=$(jq -n --arg id "$CLIENT_ID" '{"must": [{"key": "client_id", "match": {"value": $id}}]}')
 
 if [ -n "$CATEGORY" ]; then
   FILTER=$(echo "$FILTER" | jq --arg cat "$CATEGORY" \

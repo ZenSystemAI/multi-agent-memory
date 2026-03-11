@@ -16,7 +16,11 @@ BATCH_SIZE=10
 MAX_BATCHES=20
 
 if [ -f "$HOME/.openclaw/.env" ]; then
-    export $(grep -E 'QDRANT_API_KEY|OPENAI_API_KEY|BRAIN_API_KEY|BRAIN_API_URL' "$HOME/.openclaw/.env" | xargs)
+    while IFS='=' read -r key value; do
+      case "$key" in
+        QDRANT_API_KEY|OPENAI_API_KEY|BRAIN_API_KEY|BRAIN_API_URL) export "$key=$value" ;;
+      esac
+    done < "$HOME/.openclaw/.env"
 fi
 
 if [ -z "${OPENAI_API_KEY:-}" ]; then

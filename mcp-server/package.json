@@ -1,6 +1,6 @@
 {
   "name": "@zensystemai/multi-agent-memory-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "MCP server for Multi-Agent Memory - cross-agent persistent memory system",
   "main": "src/index.js",

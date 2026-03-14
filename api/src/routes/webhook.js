@@ -78,6 +78,7 @@ webhookRouter.post('/n8n', async (req, res) => {
     });
 
     // Store as event in structured database
+    const warnings = [];
     if (isStoreAvailable()) try {
       await createEvent({
         content,
@@ -91,6 +92,7 @@ webhookRouter.post('/n8n', async (req, res) => {
       });
     } catch (e) {
       console.error('[webhook:n8n] Store write failed:', e.message);
+      warnings.push(`Structured store write failed: ${e.message}`);
     }
 
     // If workflow errored, also update status
@@ -104,10 +106,13 @@ webhookRouter.post('/n8n', async (req, res) => {
         });
       } catch (e) {
         console.error('[webhook:n8n] Status update failed:', e.message);
+        warnings.push(`Status update failed: ${e.message}`);
       }
     }
 
-    res.status(201).json({ id: pointId, content });
+    const response = { id: pointId, content };
+    if (warnings.length > 0) response.warnings = warnings;
+    res.status(201).json(response);
   } catch (err) {
     console.error('[webhook:n8n] Error:', err.message);
     res.status(500).json({ error: err.message });

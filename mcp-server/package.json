@@ -1,26 +1,38 @@
 {
   "name": "@zensystemai/multi-agent-memory-mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
-  "description": "MCP server for Multi-Agent Memory - cross-agent persistent memory system",
+  "description": "Persistent semantic memory across AI agents — credential scrubbing, auto-consolidation, multi-backend storage (Qdrant + SQLite/Postgres/Baserow)",
   "main": "src/index.js",
   "bin": {
     "multi-agent-memory-mcp": "src/index.js"
   },
   "files": [
-    "src/"
+    "src/",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "start": "node src/index.js"
   },
   "keywords": [
     "mcp",
+    "mcp-server",
     "memory",
     "ai",
     "agent",
     "multi-agent",
-    "llm"
+    "llm",
+    "semantic-search",
+    "persistent-memory",
+    "cross-agent",
+    "knowledge-base",
+    "qdrant",
+    "embeddings",
+    "credential-scrubbing"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "ZenSystem",
   "license": "MIT",
   "repository": {

@@ -96,6 +96,43 @@ Stores a fact that any other agent (n8n, OpenClaw, Cursor) can retrieve later.
 | `status` | Update-in-place by `subject` | Current state of a system or workflow |
 | `decision` | Append-only | Choices made and why |
 
+## More Usage Examples
+
+Check memory health:
+
+```
+brain_stats
+```
+
+Returns total count, active vs superseded, consolidated, and breakdown by type.
+
+Trigger memory consolidation:
+
+```
+brain_consolidate action="run"
+```
+
+An LLM analyzes unconsolidated memories — merging duplicates, flagging contradictions, discovering connections, and generating insights.
+
+Check consolidation status:
+
+```
+brain_consolidate action="status"
+```
+
+Returns whether consolidation is running, when it last ran, and which LLM is configured.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `BRAIN_API_KEY environment variable is required` | Set `BRAIN_API_KEY` in your MCP config `env` block |
+| `API ... 401 Unauthorized` | API key doesn't match the one in your Memory API `.env` |
+| `API ... ECONNREFUSED` | Memory API isn't running — run `docker compose up -d` |
+| `fetch failed` / timeout | Check `BRAIN_API_URL` points to the correct host and port |
+| Tool calls return empty results | Verify Qdrant is running and has data — use `brain_stats` to check |
+| `Qdrant request timed out` | Qdrant is slow or unreachable — check connectivity, increase `QDRANT_TIMEOUT_MS` |
+
 ## Full Documentation
 
 See the [main repository](https://github.com/ZenSystemAI/multi-agent-memory) for the complete API reference, adapter docs (Bash CLI, n8n, OpenClaw), deployment guide, and architecture overview.

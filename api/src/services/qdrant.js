@@ -8,16 +8,29 @@ const COLLECTION = 'shared_memories';
 const DECAY_FACTOR = parseFloat(process.env.DECAY_FACTOR) || 0.98;
 const DECAY_TYPES = ['fact', 'status']; // events and decisions are historical — don't decay
 
+const QDRANT_TIMEOUT_MS = parseInt(process.env.QDRANT_TIMEOUT_MS) || 10000;
+
 async function qdrantRequest(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (QDRANT_API_KEY) headers['api-key'] = QDRANT_API_KEY;
 
-  const res = await fetch(`${QDRANT_URL}${path}`, { ...options, headers: { ...headers, ...options.headers } });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Qdrant ${options.method || 'GET'} ${path} failed: ${res.status} ${body}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), QDRANT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${QDRANT_URL}${path}`, { ...options, headers: { ...headers, ...options.headers }, signal: controller.signal });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Qdrant ${options.method || 'GET'} ${path} failed: ${res.status} ${body}`);
+    }
+    return res.json();
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`Qdrant request timed out after ${QDRANT_TIMEOUT_MS}ms: ${options.method || 'GET'} ${path}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 export async function initQdrant() {

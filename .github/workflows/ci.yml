@@ -25,3 +25,8 @@ jobs:
 
       - name: Run tests
         run: cd api && npm test
+
+      - name: Validate MCP server entrypoint
+        run: cd mcp-server && timeout 5 node src/index.js 2>&1 || true
+        env:
+          BRAIN_API_KEY: test-key

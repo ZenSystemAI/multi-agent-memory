@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import { complete, getLLMInfo } from './llm/interface.js';
-import { scrollPoints, updatePointPayload, upsertPoint, findByPayload } from './qdrant.js';
+import { scrollPoints, updatePointPayload, upsertPoint, findByPayload, searchPoints } from './qdrant.js';
 import { embed } from './embedders/interface.js';
+
+const SEMANTIC_DEDUP_THRESHOLD = 0.92; // Skip if existing memory is >92% similar
 
 // Consolidation run history (in-memory, persisted via Qdrant events)
 let lastRunAt = null;
@@ -48,7 +50,7 @@ Rules:
 - Only create merged_facts when 2+ memories say essentially the same thing
 - Only flag contradictions when memories genuinely conflict (not just different aspects)
 - Connections should be meaningful, not trivial (e.g., same client mentioned)
-- Insights should be actionable patterns, not just summaries
+- Insights must contain SPECIFIC, ACTIONABLE information not already captured in the source memories. Do NOT generate generic observations like "the system is working well", "there is ongoing commitment to efficiency", "the projects are closely intertwined", or "successful completion indicates effective management". If you have no genuinely novel insight, return an empty insights array.
 - If no merges/contradictions/connections/insights found, return empty arrays
 - Preserve client_id from source memories
 
@@ -86,6 +88,7 @@ export async function runConsolidation() {
     let totalContradictions = 0;
     let totalConnections = 0;
     let totalInsights = 0;
+    let totalSkipped = 0;
     const errors = [];
 
     for (const [clientId, groupPoints] of Object.entries(groups)) {
@@ -99,6 +102,7 @@ export async function runConsolidation() {
           totalContradictions += result.contradictions;
           totalConnections += result.connections;
           totalInsights += result.insights;
+          totalSkipped += result.skipped || 0;
 
           // Mark batch as consolidated
           const ids = batch.map(p => p.id);
@@ -122,34 +126,22 @@ export async function runConsolidation() {
       contradictions_found: totalContradictions,
       connections_found: totalConnections,
       insights_generated: totalInsights,
+      skipped_dedup: totalSkipped,
       errors: errors.length > 0 ? errors : undefined,
       duration_ms: duration,
       llm: getLLMInfo(),
     };
 
-    // Log the consolidation run as an event
+    // Clean up old, low-value events (>30 days, never accessed, medium/low importance)
+    let eventsExpired = 0;
     try {
-      const content = `Consolidation run: processed ${points.length} memories, merged ${totalMerged} facts, found ${totalContradictions} contradictions, ${totalConnections} connections, ${totalInsights} insights`;
-      const vector = await embed(content);
-      await upsertPoint(crypto.randomUUID(), vector, {
-        text: content,
-        type: 'event',
-        source_agent: 'consolidation-engine',
-        client_id: 'global',
-        category: 'procedural',
-        importance: 'medium',
-        content_hash: crypto.createHash('sha256').update(content).digest('hex').slice(0, 16),
-        created_at: lastRunAt,
-        last_accessed_at: lastRunAt,
-        access_count: 0,
-        confidence: 1.0,
-        active: true,
-        consolidated: true, // Meta — don't re-consolidate this
-        metadata: { consolidation_summary: summary },
-      });
+      eventsExpired = await cleanupOldEvents();
     } catch (e) {
-      console.error('[consolidation] Failed to log run event:', e.message);
+      console.error('[consolidation] Event cleanup failed:', e.message);
     }
+    summary.events_expired = eventsExpired;
+
+    console.log(`[consolidation] Complete: ${points.length} memories, ${totalMerged} merged, ${totalContradictions} contradictions, ${totalConnections} connections, ${totalInsights} insights, ${totalSkipped} skipped (dedup), ${eventsExpired} events expired`);
 
     return summary;
   } catch (err) {
@@ -179,11 +171,29 @@ async function consolidateBatch(points, clientId) {
   const now = new Date().toISOString();
   let merged = 0, contradictions = 0, connections = 0, insights = 0;
 
-  // Store merged facts as new memories
+  // Store merged facts as new memories (with dedup)
+  let skipped = 0;
   if (result.merged_facts?.length > 0) {
     for (const fact of result.merged_facts) {
       const content = fact.content;
+      const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+      // Exact dedup: skip if identical content already exists
+      const existing = await findByPayload('content_hash', contentHash, { active: true });
+      if (existing.length > 0) {
+        skipped++;
+        continue;
+      }
+
       const vector = await embed(content);
+
+      // Semantic dedup: skip if a very similar memory already exists
+      const similar = await searchPoints(vector, { active: true }, 1);
+      if (similar.length > 0 && similar[0].score >= SEMANTIC_DEDUP_THRESHOLD) {
+        skipped++;
+        continue;
+      }
+
       await upsertPoint(crypto.randomUUID(), vector, {
         text: content,
         type: 'fact',
@@ -191,8 +201,8 @@ async function consolidateBatch(points, clientId) {
         client_id: fact.client_id || clientId,
         category: 'semantic',
         importance: fact.importance || 'medium',
-        key: fact.key || crypto.createHash('sha256').update(content).digest('hex').slice(0, 16),
-        content_hash: crypto.createHash('sha256').update(content).digest('hex').slice(0, 16),
+        key: fact.key || contentHash,
+        content_hash: contentHash,
         created_at: now,
         last_accessed_at: now,
         access_count: 0,
@@ -251,11 +261,28 @@ async function consolidateBatch(points, clientId) {
     }
   }
 
-  // Store insights as new memories
+  // Store insights as new memories (with dedup)
   if (result.insights?.length > 0) {
     for (const insight of result.insights) {
       const content = insight.content;
+      const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+      // Exact dedup: skip if identical content already exists
+      const existing = await findByPayload('content_hash', contentHash, { active: true });
+      if (existing.length > 0) {
+        skipped++;
+        continue;
+      }
+
       const vector = await embed(content);
+
+      // Semantic dedup: skip if a very similar memory already exists
+      const similar = await searchPoints(vector, { active: true }, 1);
+      if (similar.length > 0 && similar[0].score >= SEMANTIC_DEDUP_THRESHOLD) {
+        skipped++;
+        continue;
+      }
+
       await upsertPoint(crypto.randomUUID(), vector, {
         text: content,
         type: 'fact',
@@ -263,7 +290,7 @@ async function consolidateBatch(points, clientId) {
         client_id: clientId,
         category: 'semantic',
         importance: insight.importance || 'medium',
-        content_hash: crypto.createHash('sha256').update(content).digest('hex').slice(0, 16),
+        content_hash: contentHash,
         created_at: now,
         last_accessed_at: now,
         access_count: 0,
@@ -276,7 +303,32 @@ async function consolidateBatch(points, clientId) {
     }
   }
 
-  return { merged, contradictions, connections, insights };
+  return { merged, contradictions, connections, insights, skipped };
+}
+
+const EVENT_TTL_DAYS = parseInt(process.env.EVENT_TTL_DAYS) || 30;
+
+async function cleanupOldEvents() {
+  const cutoff = new Date(Date.now() - EVENT_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  // Scroll events older than TTL that were never accessed and are medium/low importance
+  const result = await scrollPoints({}, 200);
+  const points = (result.points || []).filter(p => {
+    const pay = p.payload;
+    return pay.type === 'event' &&
+      pay.active === true &&
+      pay.access_count === 0 &&
+      pay.created_at < cutoff &&
+      (pay.importance === 'medium' || pay.importance === 'low');
+  });
+
+  if (points.length === 0) return 0;
+
+  // Mark as inactive (soft delete) rather than hard delete
+  const ids = points.map(p => p.id);
+  await updatePointPayload(ids, { active: false, expired_at: new Date().toISOString() });
+  console.log(`[consolidation] Expired ${ids.length} old events (>${EVENT_TTL_DAYS} days, never accessed, medium/low importance)`);
+  return ids.length;
 }
 
 export function getConsolidationStatus() {

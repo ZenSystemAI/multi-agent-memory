@@ -22,8 +22,13 @@ export async function initLLM() {
       provider = new OllamaProvider();
       break;
     }
+    case 'gemini': {
+      const { GeminiProvider } = await import('./gemini.js');
+      provider = new GeminiProvider();
+      break;
+    }
     default:
-      throw new Error(`Unknown LLM provider: ${PROVIDER}. Use: openai, anthropic, ollama`);
+      throw new Error(`Unknown LLM provider: ${PROVIDER}. Use: openai, anthropic, ollama, gemini`);
   }
   console.log(`[llm] Consolidation LLM: ${PROVIDER} (${provider.model})`);
 }

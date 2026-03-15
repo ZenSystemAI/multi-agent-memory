@@ -1,6 +1,6 @@
 {
   "name": "@zensystemai/multi-agent-memory-mcp",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "description": "Persistent semantic memory across AI agents — credential scrubbing, auto-consolidation, multi-backend storage (Qdrant + SQLite/Postgres/Baserow)",
   "main": "src/index.js",

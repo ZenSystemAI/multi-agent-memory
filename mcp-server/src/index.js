@@ -36,7 +36,7 @@ async function apiRequest(path, options = {}) {
 }
 
 const server = new Server(
-  { name: 'shared-brain', version: '1.0.2' },
+  { name: 'shared-brain', version: '1.1.0' },
   { capabilities: { tools: {} } }
 );
 

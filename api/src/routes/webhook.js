@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { embed } from '../services/embedders/interface.js';
-import { upsertPoint } from '../services/qdrant.js';
+import { upsertPoint, findByPayload } from '../services/qdrant.js';
 import { createEvent, upsertStatus, isStoreAvailable } from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
 
@@ -48,6 +48,17 @@ webhookRouter.post('/n8n', async (req, res) => {
     content = scrubCredentials(content);
 
     const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+    // Dedup: if identical content already exists, return existing memory
+    const duplicates = await findByPayload('content_hash', contentHash, { active: true });
+    if (duplicates.length > 0) {
+      return res.status(200).json({
+        id: duplicates[0].id,
+        deduplicated: true,
+        message: 'Identical webhook event already exists — skipped',
+      });
+    }
+
     const pointId = crypto.randomUUID();
 
     // Store as event in Qdrant

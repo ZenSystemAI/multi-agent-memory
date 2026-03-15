@@ -465,9 +465,11 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 |----------|---------|-------------|
 | `CONSOLIDATION_ENABLED` | `true` | Enable/disable the consolidation engine |
 | `CONSOLIDATION_INTERVAL` | `0 */6 * * *` | Cron schedule (default: every 6 hours) |
-| `CONSOLIDATION_LLM` | `openai` | `openai`, `anthropic`, or `ollama` |
-| `CONSOLIDATION_MODEL` | `gpt-4o-mini` | Model for consolidation |
+| `CONSOLIDATION_LLM` | `openai` | `openai`, `anthropic`, `gemini`, or `ollama` |
+| `CONSOLIDATION_MODEL` | `gpt-4o-mini` | Model for consolidation (e.g. `gemini-2.5-flash`) |
 | `ANTHROPIC_API_KEY` | — | Required when using Anthropic for consolidation |
+| `GEMINI_API_KEY` | — | Required when using Gemini for consolidation |
+| `EVENT_TTL_DAYS` | `30` | Auto-expire old unaccessed events after this many days |
 
 ### Memory Decay
 

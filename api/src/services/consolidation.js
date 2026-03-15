@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import { complete, getLLMInfo } from './llm/interface.js';
 import { scrollPoints, updatePointPayload, upsertPoint, findByPayload, searchPoints } from './qdrant.js';
 import { embed } from './embedders/interface.js';
+import { isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory, upsertAlias, loadAllAliases } from './stores/interface.js';
+import { loadAliasCache, addToAliasCache } from './entities.js';
 
 const SEMANTIC_DEDUP_THRESHOLD = 0.92; // Skip if existing memory is >92% similar
 
@@ -43,6 +45,14 @@ Analyze the following memories and produce a JSON response with these fields:
       "source_memories": ["id1", "id2", "id3"],
       "importance": "high|medium|low"
     }
+  ],
+  "entities": [
+    {
+      "canonical_name": "The standard/official name for this entity",
+      "type": "client|person|system|service|domain|technology|workflow|agent",
+      "aliases": ["other-name", "abbreviation", "slug"],
+      "mentioned_in": ["memory-id-1", "memory-id-2"]
+    }
   ]
 }
 
@@ -53,6 +63,15 @@ Rules:
 - Insights must contain SPECIFIC, ACTIONABLE information not already captured in the source memories. Do NOT generate generic observations like "the system is working well", "there is ongoing commitment to efficiency", "the projects are closely intertwined", or "successful completion indicates effective management". If you have no genuinely novel insight, return an empty insights array.
 - If no merges/contradictions/connections/insights found, return empty arrays
 - Preserve client_id from source memories
+- Extract ALL named entities: client names, people, systems, services, domains, technologies, workflows, agent names
+- For each entity, choose the most official/complete form as canonical_name (e.g. "Acme Corporation" not "acme")
+- List ALL variant spellings/references as aliases (include slugs, abbreviations, informal names)
+- type must be one of: client, person, system, service, domain, technology, workflow, agent
+- mentioned_in must only contain memory IDs from the batch being analyzed
+- If an entity appears in source_agent fields, its type is "agent"
+- If an entity appears in client_id fields, its type is "client"
+- Domain names (*.com, *.ca, etc.) have type "domain"
+- Tools and software have type "technology"
 
 MEMORIES TO ANALYZE:
 `;
@@ -89,6 +108,7 @@ export async function runConsolidation() {
     let totalConnections = 0;
     let totalInsights = 0;
     let totalSkipped = 0;
+    let totalEntities = 0;
     const errors = [];
 
     for (const [clientId, groupPoints] of Object.entries(groups)) {
@@ -103,6 +123,7 @@ export async function runConsolidation() {
           totalConnections += result.connections;
           totalInsights += result.insights;
           totalSkipped += result.skipped || 0;
+          totalEntities += result.entities || 0;
 
           // Mark batch as consolidated
           const ids = batch.map(p => p.id);
@@ -127,10 +148,21 @@ export async function runConsolidation() {
       connections_found: totalConnections,
       insights_generated: totalInsights,
       skipped_dedup: totalSkipped,
+      entities_processed: totalEntities,
       errors: errors.length > 0 ? errors : undefined,
       duration_ms: duration,
       llm: getLLMInfo(),
     };
+
+    // Refresh alias cache after consolidation (new aliases may have been discovered)
+    if (isEntityStoreAvailable()) {
+      try {
+        const aliases = await loadAllAliases();
+        loadAliasCache(aliases);
+      } catch (e) {
+        console.error('[consolidation] Alias cache refresh failed:', e.message);
+      }
+    }
 
     // Clean up old, low-value events (>30 days, never accessed, medium/low importance)
     let eventsExpired = 0;
@@ -141,7 +173,7 @@ export async function runConsolidation() {
     }
     summary.events_expired = eventsExpired;
 
-    console.log(`[consolidation] Complete: ${points.length} memories, ${totalMerged} merged, ${totalContradictions} contradictions, ${totalConnections} connections, ${totalInsights} insights, ${totalSkipped} skipped (dedup), ${eventsExpired} events expired`);
+    console.log(`[consolidation] Complete: ${points.length} memories, ${totalMerged} merged, ${totalContradictions} contradictions, ${totalConnections} connections, ${totalInsights} insights, ${totalSkipped} skipped (dedup), ${totalEntities} entities, ${eventsExpired} events expired`);
 
     return summary;
   } catch (err) {
@@ -303,7 +335,49 @@ async function consolidateBatch(points, clientId) {
     }
   }
 
-  return { merged, contradictions, connections, insights, skipped };
+  // Process entities discovered by the LLM
+  let entitiesProcessed = 0;
+  if (result.entities?.length > 0 && isEntityStoreAvailable()) {
+    for (const ent of result.entities) {
+      try {
+        // Find or create the entity
+        let entity = await findEntity(ent.canonical_name);
+        let entityId;
+        if (entity) {
+          entityId = entity.id;
+          // Bump mention count
+          await createEntity({ canonical_name: ent.canonical_name, entity_type: ent.type || entity.entity_type });
+        } else {
+          const created = await createEntity({ canonical_name: ent.canonical_name, entity_type: ent.type || 'system' });
+          entityId = created.id;
+          addToAliasCache(ent.canonical_name, entityId, ent.canonical_name, ent.type || 'system');
+        }
+
+        // Register aliases
+        if (ent.aliases && entityId) {
+          for (const alias of ent.aliases) {
+            const aliasResult = await upsertAlias(entityId, alias);
+            if (aliasResult.created) {
+              addToAliasCache(alias, entityId, ent.canonical_name, ent.type || 'system');
+            }
+          }
+        }
+
+        // Link to mentioned memories
+        if (ent.mentioned_in && entityId) {
+          for (const memId of ent.mentioned_in) {
+            await linkEntityToMemory(entityId, memId, 'mentioned');
+          }
+        }
+
+        entitiesProcessed++;
+      } catch (e) {
+        console.error(`[consolidation] Entity processing failed for "${ent.canonical_name}":`, e.message);
+      }
+    }
+  }
+
+  return { merged, contradictions, connections, insights, skipped, entities: entitiesProcessed };
 }
 
 const EVENT_TTL_DAYS = parseInt(process.env.EVENT_TTL_DAYS) || 30;

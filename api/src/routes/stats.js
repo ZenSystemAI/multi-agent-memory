@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getMemoryStats, scrollPoints, computeEffectiveConfidence, DECAY_TYPES } from '../services/qdrant.js';
+import { isEntityStoreAvailable, getEntityStats } from '../services/stores/interface.js';
 
 export const statsRouter = Router();
 
@@ -21,6 +22,14 @@ statsRouter.get('/', async (req, res) => {
       // Non-critical
     }
 
+    // Entity stats
+    let entityStats = null;
+    if (isEntityStoreAvailable()) {
+      try {
+        entityStats = await getEntityStats();
+      } catch (e) { /* non-critical */ }
+    }
+
     res.json({
       ...stats,
       decayed_below_50pct: decayedCount,
@@ -28,6 +37,7 @@ statsRouter.get('/', async (req, res) => {
         factor: parseFloat(process.env.DECAY_FACTOR) || 0.98,
         affected_types: DECAY_TYPES,
       },
+      ...(entityStats ? { entities: entityStats } : {}),
     });
   } catch (err) {
     console.error('[stats] Error:', err.message);

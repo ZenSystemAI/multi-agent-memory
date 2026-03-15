@@ -2,8 +2,9 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { embed } from '../services/embedders/interface.js';
 import { upsertPoint, findByPayload } from '../services/qdrant.js';
-import { createEvent, upsertStatus, isStoreAvailable } from '../services/stores/interface.js';
+import { createEvent, upsertStatus, isStoreAvailable, isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory } from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
+import { extractEntities, linkExtractedEntities } from '../services/entities.js';
 
 export const webhookRouter = Router();
 
@@ -61,6 +62,19 @@ webhookRouter.post('/n8n', async (req, res) => {
 
     const pointId = crypto.randomUUID();
 
+    // Extract entities
+    let extractedEntities = [];
+    try {
+      extractedEntities = extractEntities(content, client_id || 'global', 'n8n');
+      // workflow_name is always an entity
+      if (workflow_name) {
+        const alreadyHas = extractedEntities.some(e => e.name.toLowerCase() === workflow_name.toLowerCase());
+        if (!alreadyHas) extractedEntities.push({ name: workflow_name, type: 'workflow', role: 'subject', entityId: null });
+      }
+    } catch (e) { /* non-blocking */ }
+
+    const entityPayload = extractedEntities.length > 0 ? extractedEntities.map(e => ({ name: e.name, type: e.type })) : undefined;
+
     // Store as event in Qdrant
     const vector = await embed(content);
     await upsertPoint(pointId, vector, {
@@ -86,7 +100,15 @@ webhookRouter.post('/n8n', async (req, res) => {
         status,
         items_processed: items_processed || null,
       },
+      ...(entityPayload ? { entities: entityPayload } : {}),
     });
+
+    // Link entities (non-blocking)
+    if (isEntityStoreAvailable() && extractedEntities.length > 0) {
+      try {
+        await linkExtractedEntities(extractedEntities, pointId, { createEntity, findEntity, linkEntityToMemory });
+      } catch (e) { console.error('[webhook:entities] Linking failed:', e.message); }
+    }
 
     // Store as event in structured database
     const warnings = [];

@@ -89,13 +89,24 @@ Store ──> Dedup Check ──> Supersedes Chain ──> Confidence Decay ─�
   └────────────────────────── Vector + Structured DB ──────────────────────┘
 ```
 
-**Deduplication** — Content is hashed on storage. Exact duplicates are caught and return the existing memory instead of creating a new one.
+**Deduplication** — Content is SHA-256 hashed on storage. Exact duplicates are caught and return the existing memory. The consolidation engine also catches near-duplicates at 92% semantic similarity.
 
 **Supersedes** — When you store a fact with the same `key` as an existing fact, the old one is marked inactive and the new one links back to it. Same pattern for statuses by `subject`. Old versions remain searchable but rank lower.
 
 **Confidence Decay** — Facts and statuses lose confidence over time if not accessed (configurable, default 2%/day). Events and decisions don't decay — they're historical records. Accessing a memory resets its decay clock. Search results are ranked by `similarity * confidence`.
 
-**LLM Consolidation** — A periodic background process (configurable, default every 6 hours) sends unconsolidated memories to an LLM that finds duplicates to merge, contradictions to flag, connections between memories, and cross-memory insights. Nobody else has this.
+**LLM Consolidation** — A periodic background process (configurable, default every 6 hours) analyzes unconsolidated memories via LLM to find duplicates to merge, contradictions to flag, connections between memories, cross-memory insights, and named entities to extract and normalize.
+
+### Entity Extraction & Linking
+
+Every memory automatically extracts named entities at storage time — clients, technologies, workflows, people, domains, and agents. Two extraction paths compound over time:
+
+- **Fast path (every write)** — Regex + known-tech dictionary + alias cache lookup. Sub-millisecond, no LLM call, non-blocking. Always extracts `client_id` and `source_agent` as entities. Catches technology names (40+ built-in), domain names, quoted references, and capitalized proper nouns.
+- **Smart path (every consolidation)** — The LLM discovers entities regex missed, normalizes aliases (so "acme-corp", "ACME", and "Acme Corporation" resolve to one canonical entity), and classifies types. Discovered aliases feed back into the fast-path alias cache — extraction gets smarter over time.
+
+Entities are stored in three structured DB tables (SQLite/Postgres): canonical entities, aliases, and memory links. Each Qdrant memory payload is enriched with an `entities` array, indexed for native vector-filtered search — `GET /memory/search?entity=Docker` filters at the Qdrant level with no result-count ceiling.
+
+Query the entity graph via `GET /entities`, filter search by entity, or use the `brain_entities` MCP tool.
 
 ### Credential Scrubbing
 
@@ -106,7 +117,7 @@ All content is scrubbed before storage. API keys, JWTs, SSH private keys, passwo
 The API acts as a gatekeeper between your agents and the data. No agent — whether it's an OpenClaw agent, Claude Code, or a rogue script — has direct access to Qdrant or the database. They can only do what the API allows:
 
 - **Store** and **search** memories (through validated endpoints)
-- **Read** briefings and stats
+- **Read** briefings, stats, and entities
 
 They **cannot**:
 - Delete memories or drop tables
@@ -114,7 +125,7 @@ They **cannot**:
 - Access the filesystem or database directly
 - Modify other agents' memories retroactively
 
-This is by design. Autonomous agents like OpenClaw run unattended on separate machines. If one hallucinates or goes off-script, the worst it can do is store bad data — it can't destroy good data. Compare that to systems where the agent has direct SQLite access on the same machine: one bad command and your memory is gone.
+This is by design. Autonomous agents like OpenClaw run unattended on separate machines. If one hallucinates or goes off-script, the worst it can do is store bad data — it can't destroy good data.
 
 ### Security
 
@@ -125,7 +136,7 @@ This is by design. Autonomous agents like OpenClaw run unattended on separate ma
 
 ### Session Briefings
 
-Start every session by asking "what happened since I was last here?" The briefing endpoint returns categorized updates from all other agents, excluding the requesting agent's own entries. No more context loss between sessions.
+Start every session by asking "what happened since I was last here?" The briefing endpoint returns categorized updates from all other agents, excluding the requesting agent's own entries. Includes an `entities_mentioned` summary showing which entities appeared in the period.
 
 ```bash
 curl "http://localhost:8084/briefing?since=2025-01-01T00:00:00Z&agent=claude-code" \
@@ -135,10 +146,10 @@ curl "http://localhost:8084/briefing?since=2025-01-01T00:00:00Z&agent=claude-cod
 ### Dual Storage
 
 Every memory is stored in two places:
-- **Qdrant** (vector database) — for semantic search, similarity matching, and confidence scoring
-- **Structured database** — for exact queries, filtering, and structured lookups
+- **Qdrant** (vector database) — for semantic search, similarity matching, confidence scoring, and entity-filtered search via indexed payload
+- **Structured database** — for exact queries, filtering, structured lookups, and entity graph storage
 
-This means you get both "find memories similar to X" *and* "give me all facts with key Y" in the same system.
+This means you get both "find memories similar to X" *and* "give me all facts with key Y" *and* "show me everything about entity Z" in the same system.
 
 ### How It Compares
 
@@ -146,10 +157,11 @@ This means you get both "find memories similar to X" *and* "give me all facts wi
 |---------|:-:|:-:|:-:|:-:|
 | Cross-machine by design | **Yes** | Self-host or Cloud | Via Cloudflare | No |
 | Typed memory (event/fact/status/decision) | **Yes** | No | No | No |
+| Entity extraction + linking | **Yes** | No | No | No |
 | Dual storage (vector + structured DB) | **Yes** | Vector + Graph | No | No |
 | LLM consolidation engine (scheduled batch) | **Yes** | Inline (at write) | No | No |
 | Memory decay / confidence scoring | **Yes** | No | No | No |
-| Content deduplication | **Hash-based** | LLM-based | No | No |
+| Content deduplication | **Hash + semantic** | LLM-based | No | No |
 | Credential scrubbing | **Yes** | No | No | No |
 | Timing-safe auth + rate limiting | **Yes** | No | No | No |
 | Session briefings | **Yes** | No | No | No |
@@ -173,17 +185,17 @@ This means you get both "find memories similar to X" *and* "give me all facts wi
 ┌───────────────────────────────────────────────────────────────────────────┐
 │                        Memory API (Express)                               │
 │  POST /memory  GET /memory/search  GET /briefing  GET /stats              │
-│  GET /memory/query   POST /webhook/n8n   POST /consolidate                │
+│  GET /memory/query  POST /webhook/n8n  POST /consolidate  GET /entities   │
 ├──────────────────────┬────────────────────────────────────────────────────┤
 │   Embedding Layer    │            LLM Layer                               │
-│  ┌────────┐ ┌──────┐│  ┌────────┐ ┌───────────┐ ┌──────┐                │
-│  │ OpenAI │ │Ollama││  │ OpenAI │ │ Anthropic │ │Ollama│                │
-│  └────────┘ └──────┘│  └────────┘ └───────────┘ └──────┘                │
+│  ┌────────┐ ┌──────┐│  ┌────────┐ ┌───────────┐ ┌──────┐ ┌──────┐      │
+│  │ OpenAI │ │Ollama││  │ OpenAI │ │ Anthropic │ │Gemini│ │Ollama│      │
+│  └────────┘ └──────┘│  └────────┘ └───────────┘ └──────┘ └──────┘      │
 ├──────────────────────┴────────────────────────────────────────────────────┤
 │                          Storage Layer                                    │
 │  ┌────────────────────┐  ┌────────┐ ┌────────┐ ┌───────┐                │
 │  │ Qdrant (vectors)   │  │ SQLite │ │Postgres│ │Baserow│                │
-│  │ Always required     │  │Default │ │  Prod  │ │  API  │                │
+│  │ + entity index      │  │Default │ │  Prod  │ │  API  │                │
 │  └────────────────────┘  └────────┘ └────────┘ └───────┘                │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -208,6 +220,8 @@ curl -X POST http://localhost:8084/memory \
     "key": "acme-prod-db-host"
   }'
 ```
+
+Entities are automatically extracted from the content and stored in both the Qdrant payload and the entity graph. Entity linking runs asynchronously and does not block the response.
 
 **Response:**
 ```json
@@ -236,7 +250,12 @@ curl -X POST http://localhost:8084/memory \
 ### `GET /memory/search` — Semantic search
 
 ```bash
-curl "http://localhost:8084/memory/search?q=database+configuration&client_id=acme-corp&limit=5" \
+# Basic search
+curl "http://localhost:8084/memory/search?q=database+configuration&limit=5" \
+  -H "X-Api-Key: YOUR_KEY"
+
+# Search filtered to a specific entity (uses Qdrant payload index — no result cap)
+curl "http://localhost:8084/memory/search?q=deployment&entity=Docker&limit=5" \
   -H "X-Api-Key: YOUR_KEY"
 ```
 
@@ -256,6 +275,7 @@ curl "http://localhost:8084/memory/search?q=database+configuration&client_id=acm
       "source_agent": "devops-agent",
       "client_id": "acme-corp",
       "importance": "high",
+      "entities": [{"name": "PostgreSQL", "type": "technology"}, {"name": "acme-corp", "type": "client"}],
       "created_at": "2025-01-15T10:30:00Z"
     }
   ]
@@ -269,6 +289,7 @@ curl "http://localhost:8084/memory/search?q=database+configuration&client_id=acm
 | `source_agent` | Filter by agent |
 | `client_id` | Filter by client |
 | `category` | Filter by category |
+| `entity` | Filter to memories linked to this entity (by name or alias) |
 | `limit` | Max results (default 10) |
 | `include_superseded` | Set to `true` to include superseded memories |
 
@@ -279,7 +300,7 @@ curl "http://localhost:8084/briefing?since=2025-01-15T00:00:00Z&agent=claude-cod
   -H "X-Api-Key: YOUR_KEY"
 ```
 
-Returns categorized updates (events, facts, statuses, decisions) from all agents since the given timestamp. Excludes entries from the requesting agent by default.
+Returns categorized updates (events, facts, statuses, decisions) from all agents since the given timestamp. Excludes entries from the requesting agent by default. The summary includes `entities_mentioned` — a ranked list of entities that appeared in the briefing period.
 
 ### `GET /memory/query` — Structured query
 
@@ -307,7 +328,14 @@ Requires a structured storage backend (SQLite, Postgres, or Baserow). Returns a 
   "consolidated": 84,
   "by_type": { "event": 820, "fact": 410, "status": 180, "decision": 132 },
   "decayed_below_50pct": 23,
-  "decay_config": { "factor": 0.98, "affected_types": ["fact", "status"] }
+  "decay_config": { "factor": 0.98, "affected_types": ["fact", "status"] },
+  "entities": {
+    "total": 303,
+    "by_type": { "technology": 28, "client": 10, "agent": 3, "domain": 16, "workflow": 120, "person": 126 },
+    "top_mentioned": [
+      { "canonical_name": "PostgreSQL", "entity_type": "technology", "mention_count": 47 }
+    ]
+  }
 }
 ```
 
@@ -317,7 +345,7 @@ Requires a structured storage backend (SQLite, Postgres, or Baserow). Returns a 
 curl -X POST http://localhost:8084/consolidate -H "X-Api-Key: YOUR_KEY"
 ```
 
-Runs the consolidation engine on demand. The engine finds duplicates, contradictions, connections, and insights across unconsolidated memories. Also runs on a schedule when `CONSOLIDATION_ENABLED=true`.
+Runs the consolidation engine on demand. The engine finds duplicates to merge, contradictions to flag, connections between memories, cross-memory insights, and named entities to extract/normalize. The alias cache is refreshed after each run. Also runs automatically on a schedule when `CONSOLIDATION_ENABLED=true`.
 
 ### `POST /webhook/n8n` — n8n workflow logging
 
@@ -333,13 +361,43 @@ curl -X POST http://localhost:8084/webhook/n8n \
   }'
 ```
 
-Automatically logs n8n workflow results as events. Failed workflows also create status entries for visibility.
+Automatically logs n8n workflow results as events with entity extraction. The `workflow_name` is always extracted as a workflow entity. Failed workflows also create status entries for visibility. Identical webhook payloads are deduplicated.
+
+### `GET /entities` — Entity graph
+
+```bash
+# List all entities (filterable by type)
+curl "http://localhost:8084/entities?type=technology&limit=20" -H "X-Api-Key: YOUR_KEY"
+
+# Get a single entity by name or alias (includes alias list)
+curl "http://localhost:8084/entities/acme-corp" -H "X-Api-Key: YOUR_KEY"
+
+# Get memory links for an entity
+curl "http://localhost:8084/entities/acme-corp/memories?limit=10" -H "X-Api-Key: YOUR_KEY"
+
+# Entity stats (counts by type, top mentioned)
+curl "http://localhost:8084/entities/stats" -H "X-Api-Key: YOUR_KEY"
+```
+
+Entity types: `client`, `person`, `system`, `service`, `domain`, `technology`, `workflow`, `agent`.
+
+Requires SQLite or Postgres structured storage backend. Baserow users get entity data in Qdrant payloads but not the entity graph endpoints.
+
+### Backfill Existing Memories
+
+After upgrading to v1.2.0, run the backfill script once to extract entities from existing memories:
+
+```bash
+docker exec shared-brain-api node scripts/backfill-entities.js
+```
+
+Uses fast-path regex extraction only (no LLM calls, no cost). Processes all active memories, creates entity records, links them, and enriches Qdrant payloads. The next consolidation run will refine entity types and discover aliases the regex missed.
 
 ## Adapters
 
 ### MCP Server (Claude Code, Cursor, Windsurf)
 
-The MCP server exposes 6 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`.
+The MCP server exposes 7 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`, `brain_entities`.
 
 **Claude Code (`~/.claude.json`):**
 ```json
@@ -459,6 +517,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `BASEROW_URL` | — | Baserow API URL |
 | `BASEROW_API_KEY` | — | Baserow API token |
 
+Entity graph tables (entities, aliases, memory links) are automatically created in SQLite and Postgres on first startup. Baserow users get entity data in Qdrant payloads only.
+
 ### Consolidation Engine
 
 | Variable | Default | Description |
@@ -517,6 +577,7 @@ node src/index.js
 - Bind to `127.0.0.1` (default) or a specific LAN IP — not `0.0.0.0` in production
 - Set `CONSOLIDATION_MODEL` to match your budget/quality needs
 - Monitor `/health` and `/stats` endpoints
+- Run `backfill-entities.js` after upgrading to populate the entity graph
 
 ## Project Structure
 
@@ -524,18 +585,20 @@ node src/index.js
 multi-agent-memory/
 ├── api/                        # Memory API server
 │   ├── src/
-│   │   ├── index.js            # Entry point, startup sequence
+│   │   ├── index.js            # Entry point, startup, alias cache init
 │   │   ├── middleware/auth.js   # API key authentication
 │   │   ├── routes/
 │   │   │   ├── memory.js       # Store, search, query endpoints
-│   │   │   ├── briefing.js     # Session briefing endpoint
-│   │   │   ├── stats.js        # Memory health dashboard
+│   │   │   ├── briefing.js     # Session briefing with entity summary
+│   │   │   ├── stats.js        # Memory + entity health dashboard
 │   │   │   ├── consolidation.js# Consolidation trigger/status
-│   │   │   └── webhook.js      # n8n webhook endpoint
+│   │   │   ├── webhook.js      # n8n webhook with entity extraction
+│   │   │   └── entities.js     # Entity graph endpoints
 │   │   └── services/
-│   │       ├── qdrant.js       # Vector store interface
+│   │       ├── qdrant.js       # Vector store + entity index
 │   │       ├── scrub.js        # Credential scrubbing
-│   │       ├── consolidation.js# LLM consolidation engine
+│   │       ├── entities.js     # Entity extraction, alias cache, linking
+│   │       ├── consolidation.js# LLM consolidation + entity refinement
 │   │       ├── embedders/      # Pluggable embedding providers
 │   │       │   ├── interface.js
 │   │       │   ├── openai.js
@@ -544,16 +607,20 @@ multi-agent-memory/
 │   │       │   ├── interface.js
 │   │       │   ├── openai.js
 │   │       │   ├── anthropic.js
+│   │       │   ├── gemini.js
 │   │       │   └── ollama.js
 │   │       └── stores/         # Pluggable storage backends
-│   │           ├── interface.js
+│   │           ├── interface.js # Unified interface (memory + entities)
 │   │           ├── sqlite.js
 │   │           ├── postgres.js
 │   │           └── baserow.js
+│   ├── scripts/
+│   │   ├── backfill-entities.js # One-time entity extraction for existing memories
+│   │   └── cleanup-duplicates.js
 │   ├── Dockerfile
 │   └── package.json
 ├── mcp-server/                 # MCP server for Claude/Cursor
-│   ├── src/index.js
+│   ├── src/index.js            # 7 tools: store, search, briefing, query, stats, consolidate, entities
 │   └── package.json
 ├── adapters/
 │   ├── bash/                   # CLI adapter (curl + jq)
@@ -569,10 +636,9 @@ multi-agent-memory/
 ## Roadmap
 
 - **Web dashboard** — Browse, search, and manage memories visually
-- **Entity graph** — Map relationships between memories (people, systems, concepts)
+- **Entity relationships** — Typed edges between entities (e.g., "Client X uses Technology Y")
 - **Python SDK** — `pip install multi-agent-memory`
 - **Automatic memory capture** — System learns what's worth remembering vs what's noise
-- **Retention policies** — Time-based auto-cleanup for low-importance memories
 - **Multi-collection support** — Isolated memory spaces per project or team
 - **Real-time notifications** — SSE/WebSocket for agents to subscribe to memory updates
 - **Memory import/export** — Bulk operations for backup and migration

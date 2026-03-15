@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 RUN mkdir -p /app/data && \
     addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nodejs && \

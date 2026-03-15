@@ -106,4 +106,14 @@ export class BaserowStore {
     if (filters.subject) params.append('filter__subject__contains', filters.subject);
     return baserowRequest(`/api/database/rows/table/${STATUS_TABLE}/?${params}`);
   }
+
+  // Entity methods — no-ops for Baserow (entity data comes from Qdrant payload only)
+  async createEntity() { return { id: null, created: false }; }
+  async findEntity() { return null; }
+  async linkEntityToMemory() { return { linked: false }; }
+  async listEntities() { return { results: [] }; }
+  async getEntityMemories() { return { results: [] }; }
+  async upsertAlias() { return { created: false }; }
+  async loadAllAliases() { return []; }
+  async getEntityStats() { return { total: 0, by_type: {}, top_mentioned: [] }; }
 }

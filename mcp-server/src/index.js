@@ -36,7 +36,7 @@ async function apiRequest(path, options = {}) {
 }
 
 const server = new Server(
-  { name: 'shared-brain', version: '1.1.0' },
+  { name: 'shared-brain', version: '1.2.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -192,6 +192,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: 'brain_entities',
+      description: 'Query the entity graph. Entities are automatically extracted from memories — clients, people, technologies, workflows, domains, agents. Use this to find all entities, get details about one, or list all memories linked to an entity.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'get', 'memories', 'stats'],
+            description: 'list=all entities, get=single entity details, memories=memories linked to entity, stats=entity counts',
+          },
+          name: {
+            type: 'string',
+            description: 'Entity name (for get/memories actions). Can be canonical name or any known alias.',
+          },
+          type: {
+            type: 'string',
+            enum: ['client', 'person', 'system', 'service', 'domain', 'technology', 'workflow', 'agent'],
+            description: 'Filter by entity type (for list action)',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max results (default 50)',
+          },
+        },
+        required: ['action'],
+      },
+    },
   ],
 }));
 
@@ -261,6 +289,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           result = await apiRequest('/consolidate', { method: 'POST' });
         }
         break;
+
+      case 'brain_entities': {
+        const action = args.action || 'list';
+        if ((action === 'get' || action === 'memories') && !args.name) {
+          return { content: [{ type: 'text', text: 'Error: name is required for get/memories actions' }], isError: true };
+        }
+        if (action === 'stats') {
+          result = await apiRequest('/entities/stats');
+        } else if (action === 'get') {
+          result = await apiRequest(`/entities/${encodeURIComponent(args.name)}`);
+        } else if (action === 'memories') {
+          const params = new URLSearchParams();
+          if (args.limit) params.append('limit', String(args.limit));
+          result = await apiRequest(`/entities/${encodeURIComponent(args.name)}/memories?${params}`);
+        } else {
+          const params = new URLSearchParams();
+          if (args.type) params.append('type', args.type);
+          if (args.limit) params.append('limit', String(args.limit));
+          result = await apiRequest(`/entities?${params}`);
+        }
+        break;
+      }
 
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

@@ -65,6 +65,18 @@ briefingRouter.get('/', async (req, res) => {
     briefing.status_changes.sort(sortDesc);
     briefing.decisions.sort(sortDesc);
 
+    // Collect entities mentioned across all briefing entries
+    const entityCounts = {};
+    for (const point of points) {
+      const entities = point.payload.entities || [];
+      for (const ent of entities) {
+        const key = ent.name;
+        if (!entityCounts[key]) entityCounts[key] = { name: ent.name, type: ent.type, count: 0 };
+        entityCounts[key].count++;
+      }
+    }
+    const entitiesMentioned = Object.values(entityCounts).sort((a, b) => b.count - a.count);
+
     // Summary stats
     briefing.summary = {
       total_entries: points.length,
@@ -74,6 +86,7 @@ briefingRouter.get('/', async (req, res) => {
       decisions: briefing.decisions.length,
       agents_active: [...new Set(points.map(p => p.payload.source_agent))],
       clients_mentioned: [...new Set(points.map(p => p.payload.client_id).filter(c => c !== 'global'))],
+      entities_mentioned: entitiesMentioned.slice(0, 20),
     };
 
     // Get collection stats

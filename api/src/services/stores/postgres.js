@@ -56,6 +56,38 @@ export class PostgresStore {
       CREATE INDEX IF NOT EXISTS idx_facts_key ON facts(key);
       CREATE INDEX IF NOT EXISTS idx_facts_client ON facts(client_id);
       CREATE INDEX IF NOT EXISTS idx_statuses_subject ON statuses(subject);
+
+      CREATE TABLE IF NOT EXISTS entities (
+        id SERIAL PRIMARY KEY,
+        canonical_name TEXT UNIQUE NOT NULL,
+        entity_type TEXT NOT NULL,
+        first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        mention_count INTEGER DEFAULT 1
+      );
+
+      CREATE TABLE IF NOT EXISTS entity_aliases (
+        id SERIAL PRIMARY KEY,
+        entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        alias TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS entity_memory_links (
+        id SERIAL PRIMARY KEY,
+        entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        memory_id TEXT NOT NULL,
+        role TEXT DEFAULT 'mentioned',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+      CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(canonical_name);
+      CREATE INDEX IF NOT EXISTS idx_ea_alias ON entity_aliases(alias);
+      CREATE INDEX IF NOT EXISTS idx_ea_entity ON entity_aliases(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_eml_entity ON entity_memory_links(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_eml_memory ON entity_memory_links(memory_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_eml_unique ON entity_memory_links(entity_id, memory_id, role);
     `);
 
     console.log(`[postgres] Database ready`);
@@ -148,5 +180,95 @@ export class PostgresStore {
     sql += ' ORDER BY updated_at DESC LIMIT 50';
     const result = await this.pool.query(sql, params);
     return { results: result.rows };
+  }
+
+  // --- Entity methods ---
+
+  async createEntity(data) {
+    const now = new Date().toISOString();
+    const result = await this.pool.query(
+      `INSERT INTO entities (canonical_name, entity_type, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (canonical_name) DO UPDATE SET
+         mention_count = entities.mention_count + 1,
+         last_seen = EXCLUDED.last_seen
+       RETURNING id, (xmax = 0) as created`,
+      [data.canonical_name, data.entity_type || 'system', data.first_seen || now, data.last_seen || now]
+    );
+    const entityId = result.rows[0].id;
+    const created = result.rows[0].created;
+    if (created) {
+      try {
+        await this.pool.query('INSERT INTO entity_aliases (entity_id, alias) VALUES ($1, $2)', [entityId, data.canonical_name.toLowerCase()]);
+      } catch (e) { /* alias exists */ }
+    }
+    return { id: entityId, created };
+  }
+
+  async findEntity(name) {
+    const lower = name.toLowerCase();
+    const alias = await this.pool.query(
+      'SELECT e.* FROM entity_aliases ea JOIN entities e ON e.id = ea.entity_id WHERE ea.alias = $1', [lower]
+    );
+    const entity = alias.rows[0] || (await this.pool.query('SELECT * FROM entities WHERE LOWER(canonical_name) = $1', [lower])).rows[0];
+    if (!entity) return null;
+    const aliases = await this.pool.query('SELECT alias FROM entity_aliases WHERE entity_id = $1', [entity.id]);
+    entity.aliases = aliases.rows.map(a => a.alias);
+    return entity;
+  }
+
+  async linkEntityToMemory(entityId, memoryId, role = 'mentioned') {
+    try {
+      await this.pool.query(
+        'INSERT INTO entity_memory_links (entity_id, memory_id, role) VALUES ($1, $2, $3)', [entityId, memoryId, role]
+      );
+      return { linked: true };
+    } catch (e) {
+      return { linked: false, duplicate: true };
+    }
+  }
+
+  async listEntities(filters = {}) {
+    let sql = `SELECT e.*, ARRAY_AGG(ea.alias) FILTER (WHERE ea.alias IS NOT NULL) as aliases
+               FROM entities e LEFT JOIN entity_aliases ea ON ea.entity_id = e.id WHERE 1=1`;
+    const params = [];
+    let i = 1;
+    if (filters.entity_type) { sql += ` AND e.entity_type = $${i++}`; params.push(filters.entity_type); }
+    sql += ' GROUP BY e.id ORDER BY e.mention_count DESC';
+    sql += ` LIMIT $${i++}`; params.push(parseInt(filters.limit) || 50);
+    if (filters.offset) { sql += ` OFFSET $${i++}`; params.push(parseInt(filters.offset) || 0); }
+    const result = await this.pool.query(sql, params);
+    return { results: result.rows.map(r => ({ ...r, aliases: r.aliases || [] })) };
+  }
+
+  async getEntityMemories(entityId, limit = 20) {
+    const result = await this.pool.query(
+      'SELECT memory_id, role, created_at FROM entity_memory_links WHERE entity_id = $1 ORDER BY created_at DESC LIMIT $2',
+      [entityId, limit]
+    );
+    return { results: result.rows };
+  }
+
+  async upsertAlias(entityId, alias) {
+    try {
+      await this.pool.query('INSERT INTO entity_aliases (entity_id, alias) VALUES ($1, $2)', [entityId, alias.toLowerCase()]);
+      return { created: true };
+    } catch (e) {
+      return { created: false, duplicate: true };
+    }
+  }
+
+  async loadAllAliases() {
+    const result = await this.pool.query(
+      'SELECT ea.alias, ea.entity_id, e.canonical_name, e.entity_type FROM entity_aliases ea JOIN entities e ON e.id = ea.entity_id'
+    );
+    return result.rows;
+  }
+
+  async getEntityStats() {
+    const total = (await this.pool.query('SELECT COUNT(*) as count FROM entities')).rows[0].count;
+    const byType = (await this.pool.query('SELECT entity_type, COUNT(*) as count FROM entities GROUP BY entity_type')).rows;
+    const topMentioned = (await this.pool.query('SELECT canonical_name, entity_type, mention_count FROM entities ORDER BY mention_count DESC LIMIT 10')).rows;
+    return { total: parseInt(total), by_type: Object.fromEntries(byType.map(r => [r.entity_type, parseInt(r.count)])), top_mentioned: topMentioned };
   }
 }

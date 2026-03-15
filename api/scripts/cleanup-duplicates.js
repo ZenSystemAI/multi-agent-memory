@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * One-time cleanup script for Shared Brain duplicate memories.
- * Run on Beelink where Qdrant is at localhost:6333.
+ * Run on the server where Qdrant is at localhost:6333.
  *
  * Usage: node cleanup-duplicates.js [--dry-run]
  *

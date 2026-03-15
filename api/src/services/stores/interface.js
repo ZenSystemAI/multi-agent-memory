@@ -75,3 +75,40 @@ export function getStoreInfo() {
     available: store !== null,
   };
 }
+
+// Entity store — available for sqlite/postgres, no-ops for baserow/none
+export function isEntityStoreAvailable() {
+  return store !== null && (BACKEND === 'sqlite' || BACKEND === 'postgres');
+}
+
+export async function createEntity(data) {
+  return requireStore().createEntity(data);
+}
+
+export async function findEntity(name) {
+  return requireStore().findEntity(name);
+}
+
+export async function linkEntityToMemory(entityId, memoryId, role) {
+  return requireStore().linkEntityToMemory(entityId, memoryId, role);
+}
+
+export async function listEntities(filters) {
+  return requireStore().listEntities(filters);
+}
+
+export async function getEntityMemories(entityId, limit) {
+  return requireStore().getEntityMemories(entityId, limit);
+}
+
+export async function upsertAlias(entityId, alias) {
+  return requireStore().upsertAlias(entityId, alias);
+}
+
+export async function loadAllAliases() {
+  return requireStore().loadAllAliases();
+}
+
+export async function getEntityStats() {
+  return requireStore().getEntityStats();
+}

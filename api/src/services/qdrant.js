@@ -92,7 +92,29 @@ export async function initQdrant() {
     });
   }
 
+  // Keyword index on entities array for entity-filtered search
+  await qdrantRequest(`/collections/${COLLECTION}/index`, {
+    method: 'PUT',
+    body: JSON.stringify({ field_name: 'entities[].name', field_schema: 'keyword'}),
+  });
+
   console.log(`[qdrant] Collection '${COLLECTION}' created with indices`);
+}
+
+// Ensure entity index exists on existing collections (idempotent)
+export async function ensureEntityIndex() {
+  try {
+    await qdrantRequest(`/collections/${COLLECTION}/index`, {
+      method: 'PUT',
+      body: JSON.stringify({ field_name: 'entities[].name', field_schema: 'keyword'}),
+    });
+    console.log('[qdrant] Entity index ready');
+  } catch (e) {
+    // Index may already exist or field schema not supported on older Qdrant
+    if (!e.message.includes('already exists')) {
+      console.warn('[qdrant] Entity index creation:', e.message);
+    }
+  }
 }
 
 export async function upsertPoint(id, vector, payload) {
@@ -104,7 +126,7 @@ export async function upsertPoint(id, vector, payload) {
   });
 }
 
-export async function searchPoints(vector, filter = {}, limit = 10) {
+export async function searchPoints(vector, filter = {}, limit = 10, nestedFilters = []) {
   const body = {
     vector,
     limit,
@@ -112,14 +134,27 @@ export async function searchPoints(vector, filter = {}, limit = 10) {
     score_threshold: 0.3,
   };
 
+  const must = [];
   if (Object.keys(filter).length > 0) {
-    body.filter = { must: [] };
     for (const [key, value] of Object.entries(filter)) {
       if (value !== undefined && value !== null) {
-        body.filter.must.push({ key, match: { value } });
+        must.push({ key, match: { value } });
       }
     }
-    if (body.filter.must.length === 0) delete body.filter;
+  }
+
+  // Support nested array payload filters (e.g., entities[].name)
+  for (const nf of nestedFilters) {
+    must.push({
+      nested: {
+        key: nf.arrayField,
+        filter: { must: [{ key: nf.key, match: { value: nf.value } }] },
+      },
+    });
+  }
+
+  if (must.length > 0) {
+    body.filter = { must };
   }
 
   const result = await qdrantRequest(`/collections/${COLLECTION}/points/search`, {
@@ -139,7 +174,7 @@ export async function scrollPoints(filter = {}, limit = 50, offset = null) {
     for (const [key, value] of Object.entries(filter)) {
       if (key === 'created_after') {
         body.filter.must.push({ key: 'created_at', range: { gte: value } });
-      } else if (value) {
+      } else if (value !== undefined && value !== null) {
         body.filter.must.push({ key, match: { value } });
       }
     }

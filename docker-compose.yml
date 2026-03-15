@@ -28,7 +28,7 @@ services:
     build: ./api
     container_name: shared-brain-api
     ports:
-      - "127.0.0.1:8084:8084"
+      - "${API_BIND:-127.0.0.1}:8084:8084"
     env_file:
       - .env
     environment:

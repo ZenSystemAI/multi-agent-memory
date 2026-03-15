@@ -64,7 +64,43 @@ export class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_facts_key ON facts(key);
       CREATE INDEX IF NOT EXISTS idx_facts_client ON facts(client_id);
       CREATE INDEX IF NOT EXISTS idx_statuses_subject ON statuses(subject);
+
+      CREATE TABLE IF NOT EXISTS entities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        canonical_name TEXT UNIQUE NOT NULL,
+        entity_type TEXT NOT NULL,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        mention_count INTEGER DEFAULT 1
+      );
+
+      CREATE TABLE IF NOT EXISTS entity_aliases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        alias TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS entity_memory_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        memory_id TEXT NOT NULL,
+        role TEXT DEFAULT 'mentioned',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+      CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(canonical_name);
+      CREATE INDEX IF NOT EXISTS idx_ea_alias ON entity_aliases(alias);
+      CREATE INDEX IF NOT EXISTS idx_ea_entity ON entity_aliases(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_eml_entity ON entity_memory_links(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_eml_memory ON entity_memory_links(memory_id);
     `);
+
+    // Unique index for entity_memory_links (idempotent linking)
+    try {
+      this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_eml_unique ON entity_memory_links(entity_id, memory_id, role)`);
+    } catch (e) { /* index may already exist */ }
 
     console.log(`[sqlite] Database ready at ${this.dbPath}`);
   }
@@ -206,5 +242,104 @@ export class SQLiteStore {
     sql += ' ORDER BY updated_at DESC LIMIT 50';
     const results = this.db.prepare(sql).all(params);
     return { results };
+  }
+
+  // --- Entity methods ---
+
+  createEntity(data) {
+    const now = new Date().toISOString();
+    const existing = this.db.prepare('SELECT * FROM entities WHERE canonical_name = @name').get({ name: data.canonical_name });
+    if (existing) {
+      this.db.prepare('UPDATE entities SET mention_count = mention_count + 1, last_seen = @now WHERE id = @id').run({ now, id: existing.id });
+      return { id: existing.id, created: false };
+    }
+    const result = this.db.prepare(
+      'INSERT INTO entities (canonical_name, entity_type, first_seen, last_seen, mention_count) VALUES (@canonical_name, @entity_type, @first_seen, @last_seen, 1)'
+    ).run({
+      canonical_name: data.canonical_name,
+      entity_type: data.entity_type || 'system',
+      first_seen: data.first_seen || now,
+      last_seen: data.last_seen || now,
+    });
+    const entityId = result.lastInsertRowid;
+    // Auto-create alias for canonical name
+    try {
+      this.db.prepare('INSERT INTO entity_aliases (entity_id, alias, created_at) VALUES (@entity_id, @alias, @created_at)').run({
+        entity_id: entityId, alias: data.canonical_name.toLowerCase(), created_at: now,
+      });
+    } catch (e) { /* alias already exists */ }
+    return { id: entityId, created: true };
+  }
+
+  findEntity(name) {
+    const lower = name.toLowerCase();
+    // Check alias table first
+    const alias = this.db.prepare(
+      'SELECT e.* FROM entity_aliases ea JOIN entities e ON e.id = ea.entity_id WHERE ea.alias = @alias'
+    ).get({ alias: lower });
+    const entity = alias || this.db.prepare('SELECT * FROM entities WHERE LOWER(canonical_name) = @name').get({ name: lower });
+    if (!entity) return null;
+    // Attach aliases
+    const aliases = this.db.prepare('SELECT alias FROM entity_aliases WHERE entity_id = @id').all({ id: entity.id });
+    entity.aliases = aliases.map(a => a.alias);
+    return entity;
+  }
+
+  linkEntityToMemory(entityId, memoryId, role = 'mentioned') {
+    const now = new Date().toISOString();
+    try {
+      this.db.prepare(
+        'INSERT INTO entity_memory_links (entity_id, memory_id, role, created_at) VALUES (@entity_id, @memory_id, @role, @created_at)'
+      ).run({ entity_id: entityId, memory_id: memoryId, role, created_at: now });
+      return { linked: true };
+    } catch (e) {
+      // Duplicate link — ignore
+      return { linked: false, duplicate: true };
+    }
+  }
+
+  listEntities(filters = {}) {
+    let sql = 'SELECT e.*, GROUP_CONCAT(ea.alias) as aliases FROM entities e LEFT JOIN entity_aliases ea ON ea.entity_id = e.id WHERE 1=1';
+    const params = {};
+    if (filters.entity_type) { sql += ' AND e.entity_type = @entity_type'; params.entity_type = filters.entity_type; }
+    sql += ' GROUP BY e.id ORDER BY e.mention_count DESC';
+    if (filters.limit) { sql += ' LIMIT @limit'; params.limit = parseInt(filters.limit) || 50; }
+    else { sql += ' LIMIT 50'; }
+    if (filters.offset) { sql += ' OFFSET @offset'; params.offset = parseInt(filters.offset) || 0; }
+    const results = this.db.prepare(sql).all(params).map(r => ({
+      ...r, aliases: r.aliases ? r.aliases.split(',') : [],
+    }));
+    return { results };
+  }
+
+  getEntityMemories(entityId, limit = 20) {
+    const links = this.db.prepare(
+      'SELECT memory_id, role, created_at FROM entity_memory_links WHERE entity_id = @entity_id ORDER BY created_at DESC LIMIT @limit'
+    ).all({ entity_id: entityId, limit });
+    return { results: links };
+  }
+
+  upsertAlias(entityId, alias) {
+    const now = new Date().toISOString();
+    try {
+      this.db.prepare('INSERT INTO entity_aliases (entity_id, alias, created_at) VALUES (@entity_id, @alias, @created_at)')
+        .run({ entity_id: entityId, alias: alias.toLowerCase(), created_at: now });
+      return { created: true };
+    } catch (e) {
+      return { created: false, duplicate: true };
+    }
+  }
+
+  loadAllAliases() {
+    return this.db.prepare(
+      'SELECT ea.alias, ea.entity_id, e.canonical_name, e.entity_type FROM entity_aliases ea JOIN entities e ON e.id = ea.entity_id'
+    ).all();
+  }
+
+  getEntityStats() {
+    const total = this.db.prepare('SELECT COUNT(*) as count FROM entities').get().count;
+    const byType = this.db.prepare('SELECT entity_type, COUNT(*) as count FROM entities GROUP BY entity_type').all();
+    const topMentioned = this.db.prepare('SELECT canonical_name, entity_type, mention_count FROM entities ORDER BY mention_count DESC LIMIT 10').all();
+    return { total, by_type: Object.fromEntries(byType.map(r => [r.entity_type, r.count])), top_mentioned: topMentioned };
   }
 }

@@ -5,11 +5,13 @@ import { briefingRouter } from './routes/briefing.js';
 import { webhookRouter } from './routes/webhook.js';
 import { statsRouter } from './routes/stats.js';
 import { consolidationRouter } from './routes/consolidation.js';
-import { initQdrant } from './services/qdrant.js';
+import { entitiesRouter } from './routes/entities.js';
+import { initQdrant, ensureEntityIndex } from './services/qdrant.js';
 import { initEmbeddings } from './services/embedders/interface.js';
-import { initStore } from './services/stores/interface.js';
+import { initStore, isEntityStoreAvailable, loadAllAliases } from './services/stores/interface.js';
 import { initLLM } from './services/llm/interface.js';
 import { runConsolidation } from './services/consolidation.js';
+import { loadAliasCache } from './services/entities.js';
 
 // Validate required environment variables
 if (!process.env.BRAIN_API_KEY) {
@@ -36,6 +38,7 @@ app.use('/memory', memoryRouter);
 app.use('/briefing', briefingRouter);
 app.use('/webhook', webhookRouter);
 app.use('/consolidate', consolidationRouter);
+app.use('/entities', entitiesRouter);
 
 async function start() {
   try {
@@ -43,10 +46,21 @@ async function start() {
     await initEmbeddings();
 
     await initQdrant();
+    await ensureEntityIndex();
     console.log('[shared-brain] Qdrant collection ready');
 
     // Initialize structured storage backend
     await initStore();
+
+    // Load entity alias cache for fast-path extraction
+    if (isEntityStoreAvailable()) {
+      try {
+        const aliases = await loadAllAliases();
+        loadAliasCache(aliases);
+      } catch (e) {
+        console.log('[shared-brain] Entity alias cache: starting empty (first run)');
+      }
+    }
 
     // Initialize consolidation LLM (optional — only if enabled)
     if (process.env.CONSOLIDATION_ENABLED !== 'false') {

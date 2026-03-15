@@ -7,8 +7,10 @@ import {
 } from '../services/qdrant.js';
 import {
   createEvent, upsertFact, upsertStatus, listEvents, listFacts, listStatuses, isStoreAvailable,
+  isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory,
 } from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
+import { extractEntities, linkExtractedEntities } from '../services/entities.js';
 
 export const memoryRouter = Router();
 
@@ -104,9 +106,31 @@ memoryRouter.post('/', async (req, res) => {
       ...(metadata ? { metadata } : {}),
     };
 
+    // Extract entities (fast path — regex + alias cache, no LLM)
+    let extractedEntities = [];
+    try {
+      extractedEntities = extractEntities(cleanContent, client_id || 'global', source_agent);
+      if (extractedEntities.length > 0) {
+        payload.entities = extractedEntities.map(e => ({ name: e.name, type: e.type }));
+      }
+    } catch (e) {
+      console.error('[memory:entities] Extraction failed (non-blocking):', e.message);
+    }
+
     // Embed and store in Qdrant
     const vector = await embed(cleanContent);
     await upsertPoint(pointId, vector, payload);
+
+    // Link entities in structured store (fire-and-forget — don't block response)
+    if (isEntityStoreAvailable() && extractedEntities.length > 0) {
+      Promise.resolve().then(async () => {
+        try {
+          await linkExtractedEntities(extractedEntities, pointId, { createEntity, findEntity, linkEntityToMemory });
+        } catch (e) {
+          console.error('[memory:entities] Linking failed:', e.message);
+        }
+      });
+    }
 
     // Store in structured database (if configured)
     const storeData = {
@@ -160,7 +184,7 @@ memoryRouter.post('/', async (req, res) => {
 // GET /memory/search — Semantic search via Qdrant
 memoryRouter.get('/search', async (req, res) => {
   try {
-    const { q, type, source_agent, client_id, category, limit, include_superseded } = req.query;
+    const { q, type, source_agent, client_id, category, limit, include_superseded, entity } = req.query;
 
     if (!q) {
       return res.status(400).json({ error: 'Missing required query parameter: q' });
@@ -176,7 +200,20 @@ memoryRouter.get('/search', async (req, res) => {
     // By default, only return active memories (not superseded)
     if (include_superseded !== 'true') filter.active = true;
 
-    const rawResults = await searchPoints(vector, filter, parseInt(limit) || 10);
+    // Entity filter — resolve alias to canonical name, then filter via Qdrant payload
+    const nestedFilters = [];
+    if (entity) {
+      let entityName = entity;
+      if (isEntityStoreAvailable()) {
+        try {
+          const found = await findEntity(entity);
+          if (found) entityName = found.canonical_name;
+        } catch (e) { /* use original name */ }
+      }
+      nestedFilters.push({ arrayField: 'entities', key: 'name', value: entityName });
+    }
+
+    const rawResults = await searchPoints(vector, filter, parseInt(limit) || 10, nestedFilters);
 
     // Apply confidence decay and re-rank
     const results = rawResults.map(r => {

@@ -183,11 +183,16 @@ export async function runConsolidation() {
 }
 
 async function consolidateBatch(points, clientId) {
-  // Format memories for the LLM
+  // Collect valid IDs for output validation
+  const batchIds = new Set(points.map(p => p.id));
+
+  // Format memories for the LLM — wrapped in XML tags to resist prompt injection
   const memoriesText = points.map(p => {
     const pay = p.payload;
-    return `[ID: ${p.id}] [Type: ${pay.type}] [Agent: ${pay.source_agent}] [Client: ${pay.client_id}] [Created: ${pay.created_at}]\n${pay.text}`;
-  }).join('\n\n---\n\n');
+    // Escape any XML-like tags in the memory content to prevent tag injection
+    const safeText = pay.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<memory id="${p.id}" type="${pay.type}" agent="${pay.source_agent}" client="${pay.client_id}" created="${pay.created_at}">\n${safeText}\n</memory>`;
+  }).join('\n\n');
 
   const prompt = CONSOLIDATION_PROMPT + memoriesText;
   const responseText = await complete(prompt);
@@ -199,6 +204,45 @@ async function consolidateBatch(points, clientId) {
     console.error('[consolidation] LLM returned invalid JSON:', responseText.slice(0, 200));
     return { merged: 0, contradictions: 0, connections: 0, insights: 0 };
   }
+
+  // Validate: strip any memory IDs not in the current batch
+  if (result.merged_facts) {
+    for (const fact of result.merged_facts) {
+      if (fact.source_memories) {
+        fact.source_memories = fact.source_memories.filter(id => batchIds.has(id));
+      }
+    }
+  }
+  if (result.contradictions) {
+    result.contradictions = result.contradictions.filter(c =>
+      batchIds.has(c.memory_a) && batchIds.has(c.memory_b)
+    );
+  }
+  if (result.connections) {
+    for (const conn of result.connections) {
+      if (conn.memories) {
+        conn.memories = conn.memories.filter(id => batchIds.has(id));
+      }
+    }
+    result.connections = result.connections.filter(c => c.memories && c.memories.length >= 2);
+  }
+  if (result.insights) {
+    for (const insight of result.insights) {
+      if (insight.source_memories) {
+        insight.source_memories = insight.source_memories.filter(id => batchIds.has(id));
+      }
+    }
+  }
+  if (result.entities) {
+    for (const ent of result.entities) {
+      if (ent.mentioned_in) {
+        ent.mentioned_in = ent.mentioned_in.filter(id => batchIds.has(id));
+      }
+    }
+  }
+
+  const VALID_IMPORTANCE = ['critical', 'high', 'medium', 'low'];
+  const sanitizeImportance = (val) => VALID_IMPORTANCE.includes(val) ? val : 'medium';
 
   const now = new Date().toISOString();
   let merged = 0, contradictions = 0, connections = 0, insights = 0;
@@ -232,7 +276,7 @@ async function consolidateBatch(points, clientId) {
         source_agent: 'consolidation-engine',
         client_id: fact.client_id || clientId,
         category: 'semantic',
-        importance: fact.importance || 'medium',
+        importance: sanitizeImportance(fact.importance),
         key: fact.key || contentHash,
         content_hash: contentHash,
         created_at: now,
@@ -321,7 +365,7 @@ async function consolidateBatch(points, clientId) {
         source_agent: 'consolidation-engine',
         client_id: clientId,
         category: 'semantic',
-        importance: insight.importance || 'medium',
+        importance: sanitizeImportance(insight.importance),
         content_hash: contentHash,
         created_at: now,
         last_accessed_at: now,

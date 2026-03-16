@@ -9,8 +9,9 @@ import {
   createEvent, upsertFact, upsertStatus, listEvents, listFacts, listStatuses, isStoreAvailable,
   isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory,
 } from '../services/stores/interface.js';
-import { scrubCredentials } from '../services/scrub.js';
+import { scrubCredentials, scrubObject } from '../services/scrub.js';
 import { extractEntities, linkExtractedEntities } from '../services/entities.js';
+import { validateMemoryInput, MAX_OBSERVED_BY } from '../middleware/validate.js';
 
 export const memoryRouter = Router();
 
@@ -19,16 +20,10 @@ memoryRouter.post('/', async (req, res) => {
   try {
     const { type, content, source_agent, client_id, category, importance, metadata } = req.body;
 
-    // Validate required fields
-    if (!type || !content || !source_agent) {
-      return res.status(400).json({
-        error: 'Missing required fields: type, content, source_agent',
-        valid_types: ['event', 'fact', 'decision', 'status'],
-      });
-    }
-
-    if (!['event', 'fact', 'decision', 'status'].includes(type)) {
-      return res.status(400).json({ error: `Invalid type: ${type}. Must be event, fact, decision, or status` });
+    // Validate all input fields
+    const validationError = validateMemoryInput(req.body);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     // Scrub credentials
@@ -58,6 +53,18 @@ memoryRouter.post('/', async (req, res) => {
       }
 
       // Different agent → corroborate: record that another agent observed the same thing
+      if (existingObservedBy.length >= MAX_OBSERVED_BY) {
+        return res.status(200).json({
+          id: existing.id,
+          type: existing.payload.type,
+          content_hash: contentHash,
+          deduplicated: true,
+          observed_by: existingObservedBy,
+          observation_count: existingObservedBy.length,
+          message: `Observer cap reached (${MAX_OBSERVED_BY}) — corroboration noted but not recorded`,
+          stored_in: { qdrant: true, structured_db: true },
+        });
+      }
       const updatedObservedBy = [...existingObservedBy, source_agent];
       const now = new Date().toISOString();
       await updatePointPayload(existing.id, {
@@ -132,7 +139,7 @@ memoryRouter.post('/', async (req, res) => {
       superseded_by: null,
       ...(type === 'fact' && req.body.key ? { key: req.body.key } : {}),
       ...(type === 'status' && req.body.subject ? { subject: req.body.subject, status_value: req.body.status_value } : {}),
-      ...(metadata ? { metadata } : {}),
+      ...(metadata ? { metadata: scrubObject(metadata) } : {}),
     };
 
     // Extract entities (fast path — regex + alias cache, no LLM)
@@ -242,7 +249,7 @@ memoryRouter.get('/search', async (req, res) => {
       nestedFilters.push({ arrayField: 'entities', key: 'name', value: entityName });
     }
 
-    const rawResults = await searchPoints(vector, filter, parseInt(limit) || 10, nestedFilters);
+    const rawResults = await searchPoints(vector, filter, Math.min(parseInt(limit) || 10, 100), nestedFilters);
 
     // Apply confidence decay and re-rank
     const results = rawResults.map(r => {

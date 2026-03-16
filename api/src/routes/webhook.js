@@ -5,6 +5,7 @@ import { upsertPoint, findByPayload, updatePointPayload } from '../services/qdra
 import { createEvent, upsertStatus, isStoreAvailable, isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory } from '../services/stores/interface.js';
 import { scrubCredentials } from '../services/scrub.js';
 import { extractEntities, linkExtractedEntities } from '../services/entities.js';
+import { validateClientId, MAX_OBSERVED_BY } from '../middleware/validate.js';
 
 export const webhookRouter = Router();
 
@@ -37,6 +38,9 @@ webhookRouter.post('/n8n', async (req, res) => {
       });
     }
 
+    const clientIdError = validateClientId(client_id);
+    if (clientIdError) return res.status(400).json({ error: clientIdError });
+
     const now = new Date().toISOString();
 
     // Build content string
@@ -67,7 +71,16 @@ webhookRouter.post('/n8n', async (req, res) => {
         });
       }
 
-      // Different source → corroborate
+      // Different source → corroborate (with cap)
+      if (existingObservedBy.length >= MAX_OBSERVED_BY) {
+        return res.status(200).json({
+          id: existing.id,
+          deduplicated: true,
+          observed_by: existingObservedBy,
+          observation_count: existingObservedBy.length,
+          message: `Observer cap reached (${MAX_OBSERVED_BY}) — corroboration noted but not recorded`,
+        });
+      }
       const updatedObservedBy = [...existingObservedBy, sourceAgent];
       await updatePointPayload(existing.id, {
         observed_by: updatedObservedBy,

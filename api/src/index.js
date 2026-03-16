@@ -1,5 +1,6 @@
 import express from 'express';
 import { authMiddleware } from './middleware/auth.js';
+import { rateLimitMiddleware } from './middleware/ratelimit.js';
 import { memoryRouter } from './routes/memory.js';
 import { briefingRouter } from './routes/briefing.js';
 import { webhookRouter } from './routes/webhook.js';
@@ -30,8 +31,9 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'shared-brain', timestamp: new Date().toISOString() });
 });
 
-// All other routes require API key
+// All other routes require API key + rate limiting
 app.use(authMiddleware);
+app.use(rateLimitMiddleware);
 
 app.use('/stats', statsRouter);
 app.use('/memory', memoryRouter);

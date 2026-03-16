@@ -11,6 +11,12 @@ const PATTERNS = [
   { regex: /(?:smtp|email|mail).*?(?:pass|password)\s*[:=]\s*['"]?[^\s'"]{8,}['"]?/gi, replace: '[EMAIL_CRED_REDACTED]' },
   // SSH private keys
   { regex: /-----BEGIN [\w\s]+ PRIVATE KEY-----[\s\S]*?-----END [\w\s]+ PRIVATE KEY-----/g, replace: '[PRIVATE_KEY_REDACTED]' },
+  // AWS access key IDs
+  { regex: /AKIA[0-9A-Z]{16}/g, replace: '[AWS_KEY_REDACTED]' },
+  // Connection strings (postgres, mongodb, redis, mysql)
+  { regex: /(?:postgres(?:ql)?|mongodb(?:\+srv)?|redis|mysql|amqp):\/\/[^\s'"]+/gi, replace: '[CONNECTION_STRING_REDACTED]' },
+  // OpenAI / Anthropic API keys
+  { regex: /sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/g, replace: '[API_KEY_REDACTED]' },
 ];
 
 export function scrubCredentials(text) {
@@ -20,4 +26,19 @@ export function scrubCredentials(text) {
     scrubbed = scrubbed.replace(regex, replace);
   }
   return scrubbed;
+}
+
+// Recursively scrub all string values in an object
+export function scrubObject(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return scrubCredentials(obj);
+  if (Array.isArray(obj)) return obj.map(item => scrubObject(item));
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = scrubObject(value);
+    }
+    return result;
+  }
+  return obj; // numbers, booleans, etc.
 }

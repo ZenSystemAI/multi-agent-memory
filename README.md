@@ -659,5 +659,5 @@ MIT License. See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  Built by <a href="https://zensystem.ai">ZenSystem</a> &mdash; Open Source from Quebec, Canada
+  Built by Steven Lefebvre <a href="https://zensystem.ai">ZenSystem</a> &mdash; Open Source from Quebec, Canada
 </p>

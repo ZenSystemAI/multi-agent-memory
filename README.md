@@ -13,6 +13,7 @@
     <a href="#roadmap">Roadmap</a>
   </p>
   <p align="center">
+    <a href="https://www.npmjs.com/package/@zensystemai/multi-agent-memory-mcp"><img alt="npm" src="https://img.shields.io/npm/v/@zensystemai/multi-agent-memory-mcp.svg" /></a>
     <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
     <img alt="Node 20+" src="https://img.shields.io/badge/node-20%2B-green.svg" />
     <img alt="Docker" src="https://img.shields.io/badge/docker-ready-blue.svg" />

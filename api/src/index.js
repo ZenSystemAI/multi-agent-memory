@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/ratelimit.js';
 import { memoryRouter } from './routes/memory.js';
@@ -25,6 +26,13 @@ const PORT = process.env.PORT || 8084;
 const HOST = process.env.HOST || '127.0.0.1';
 
 app.use(express.json({ limit: '1mb' }));
+
+// Request correlation ID
+app.use((req, res, next) => {
+  req.requestId = req.headers['x-request-id'] || crypto.randomUUID();
+  res.setHeader('x-request-id', req.requestId);
+  next();
+});
 
 // Health check (no auth)
 app.get('/health', (req, res) => {
@@ -90,9 +98,26 @@ async function start() {
       console.log('[shared-brain] Consolidation disabled (CONSOLIDATION_ENABLED=false)');
     }
 
-    app.listen(PORT, HOST, () => {
+    const server = app.listen(PORT, HOST, () => {
       console.log(`[shared-brain] Memory API running on ${HOST}:${PORT}`);
     });
+
+    // Graceful shutdown
+    const shutdown = (signal) => {
+      console.log(`[shared-brain] ${signal} received — shutting down gracefully...`);
+      server.close(() => {
+        console.log('[shared-brain] HTTP server closed');
+        process.exit(0);
+      });
+      // Force exit after 10s if connections don't drain
+      setTimeout(() => {
+        console.error('[shared-brain] Forced exit after timeout');
+        process.exit(1);
+      }, 10_000).unref();
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   } catch (err) {
     console.error('[shared-brain] Failed to start:', err.message);
     process.exit(1);

@@ -58,7 +58,7 @@ export async function initQdrant() {
   });
 
   // Create payload indices for common filters
-  const keywordFields = ['type', 'source_agent', 'client_id', 'category', 'importance', 'content_hash'];
+  const keywordFields = ['type', 'source_agent', 'client_id', 'category', 'importance', 'content_hash', 'key', 'subject'];
   for (const field of keywordFields) {
     await qdrantRequest(`/collections/${COLLECTION}/index`, {
       method: 'PUT',
@@ -101,20 +101,26 @@ export async function initQdrant() {
   console.log(`[qdrant] Collection '${COLLECTION}' created with indices`);
 }
 
-// Ensure entity index exists on existing collections (idempotent)
+// Ensure additional indexes exist on existing collections (idempotent)
 export async function ensureEntityIndex() {
-  try {
-    await qdrantRequest(`/collections/${COLLECTION}/index`, {
-      method: 'PUT',
-      body: JSON.stringify({ field_name: 'entities[].name', field_schema: 'keyword'}),
-    });
-    console.log('[qdrant] Entity index ready');
-  } catch (e) {
-    // Index may already exist or field schema not supported on older Qdrant
-    if (!e.message.includes('already exists')) {
-      console.warn('[qdrant] Entity index creation:', e.message);
+  const indexes = [
+    { field_name: 'entities[].name', field_schema: 'keyword' },
+    { field_name: 'key', field_schema: 'Keyword' },
+    { field_name: 'subject', field_schema: 'Keyword' },
+  ];
+  for (const idx of indexes) {
+    try {
+      await qdrantRequest(`/collections/${COLLECTION}/index`, {
+        method: 'PUT',
+        body: JSON.stringify(idx),
+      });
+    } catch (e) {
+      if (!e.message.includes('already exists')) {
+        console.warn(`[qdrant] Index creation for ${idx.field_name}:`, e.message);
+      }
     }
   }
+  console.log('[qdrant] Payload indexes verified');
 }
 
 export async function upsertPoint(id, vector, payload) {
@@ -191,6 +197,12 @@ export async function scrollPoints(filter = {}, limit = 50, offset = null) {
 export async function getCollectionInfo() {
   const result = await qdrantRequest(`/collections/${COLLECTION}`);
   return result.result;
+}
+
+// Fetch a single point by ID
+export async function getPoint(pointId) {
+  const result = await qdrantRequest(`/collections/${COLLECTION}/points/${pointId}`);
+  return result.result || null;
 }
 
 // Update payload fields on existing points (partial update)

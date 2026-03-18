@@ -100,7 +100,11 @@ export class SQLiteStore {
     // Unique index for entity_memory_links (idempotent linking)
     try {
       this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_eml_unique ON entity_memory_links(entity_id, memory_id, role)`);
-    } catch (e) { /* index may already exist */ }
+    } catch (e) {
+      if (!e.message.includes('already exists')) {
+        console.warn('[sqlite] idx_eml_unique creation failed:', e.message);
+      }
+    }
 
     console.log(`[sqlite] Database ready at ${this.dbPath}`);
   }
@@ -267,7 +271,11 @@ export class SQLiteStore {
       this.db.prepare('INSERT INTO entity_aliases (entity_id, alias, created_at) VALUES (@entity_id, @alias, @created_at)').run({
         entity_id: entityId, alias: data.canonical_name.toLowerCase(), created_at: now,
       });
-    } catch (e) { /* alias already exists */ }
+    } catch (e) {
+      if (!e.message.includes('UNIQUE constraint')) {
+        console.warn('[sqlite] Alias creation failed for entity', entityId, ':', e.message);
+      }
+    }
     return { id: entityId, created: true };
   }
 
@@ -293,8 +301,11 @@ export class SQLiteStore {
       ).run({ entity_id: entityId, memory_id: memoryId, role, created_at: now });
       return { linked: true };
     } catch (e) {
-      // Duplicate link — ignore
-      return { linked: false, duplicate: true };
+      if (e.message.includes('UNIQUE constraint')) {
+        return { linked: false, duplicate: true };
+      }
+      console.warn('[sqlite] linkEntityToMemory failed:', e.message);
+      return { linked: false, error: e.message };
     }
   }
 
@@ -326,7 +337,11 @@ export class SQLiteStore {
         .run({ entity_id: entityId, alias: alias.toLowerCase(), created_at: now });
       return { created: true };
     } catch (e) {
-      return { created: false, duplicate: true };
+      if (e.message.includes('UNIQUE constraint')) {
+        return { created: false, duplicate: true };
+      }
+      console.warn('[sqlite] upsertAlias failed for entity', entityId, ':', e.message);
+      return { created: false, error: e.message };
     }
   }
 

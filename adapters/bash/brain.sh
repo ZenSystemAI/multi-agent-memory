@@ -32,7 +32,7 @@ shift
 
 # === Parse args ===
 TYPE="" CONTENT="" CLIENT_ID="global" CATEGORY="" IMPORTANCE=""
-QUERY="" LIMIT="" SINCE="" INCLUDE="" SOURCE="" KEY="" SUBJECT="" STATUS_VALUE=""
+QUERY="" LIMIT="" SINCE="" INCLUDE="" SOURCE="" KEY="" SUBJECT="" STATUS_VALUE="" FORMAT=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -49,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --key) KEY="$2"; shift 2 ;;
     --subject) SUBJECT="$2"; shift 2 ;;
     --status_value) STATUS_VALUE="$2"; shift 2 ;;
+    --format) FORMAT="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -108,7 +109,7 @@ case "$CMD" in
       exit 1
     fi
 
-    QS="q=$(jq -rn --arg q "$QUERY" '$q | @uri')"
+    QS="q=$(jq -rn --arg q "$QUERY" '$q | @uri')&format=${FORMAT:-compact}"
     [ -n "$TYPE" ] && QS="${QS}&type=$(echo -n "$TYPE" | jq -sRr @uri)"
     [ -n "$SOURCE" ] && QS="${QS}&source_agent=$(echo -n "$SOURCE" | jq -sRr @uri)"
     [ -n "$CLIENT_ID" ] && [ "$CLIENT_ID" != "global" ] && QS="${QS}&client_id=$(echo -n "$CLIENT_ID" | jq -sRr @uri)"
@@ -136,7 +137,7 @@ case "$CMD" in
       exit 1
     fi
 
-    QS="since=$(jq -rn --arg s "$SINCE" '$s | @uri')&agent=${SOURCE_AGENT}"
+    QS="since=$(jq -rn --arg s "$SINCE" '$s | @uri')&agent=${SOURCE_AGENT}&format=${FORMAT:-compact}"
     [ -n "$INCLUDE" ] && QS="${QS}&include=${INCLUDE}"
 
     RESPONSE=$(curl -s --max-time 15 -H "${AUTH_HEADER}" "${API_URL}/briefing?${QS}")

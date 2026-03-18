@@ -1,17 +1,35 @@
 import { Router } from 'express';
-import { runConsolidation, getConsolidationStatus } from '../services/consolidation.js';
+import { runConsolidation, startConsolidationJob, getJob, getConsolidationStatus } from '../services/consolidation.js';
 
 export const consolidationRouter = Router();
 
-// POST /consolidate — Trigger manual consolidation
+// POST /consolidate — Trigger consolidation (async by default, ?sync=true for blocking)
 consolidationRouter.post('/', async (req, res) => {
   try {
-    const result = await runConsolidation();
-    res.json(result);
+    if (req.query.sync === 'true') {
+      // Legacy blocking mode
+      const result = await runConsolidation();
+      return res.json(result);
+    }
+    // Async mode — return job ID immediately
+    const job = startConsolidationJob();
+    if (job.status === 'skipped') {
+      return res.status(409).json(job);
+    }
+    res.status(202).json(job);
   } catch (err) {
     console.error('[consolidation] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /consolidate/job/:id — Poll job status
+consolidationRouter.get('/job/:id', async (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found or expired' });
+  }
+  res.json({ job_id: req.params.id, ...job });
 });
 
 // GET /consolidate/status — Current consolidation status

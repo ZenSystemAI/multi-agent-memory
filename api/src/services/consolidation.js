@@ -11,6 +11,9 @@ const SEMANTIC_DEDUP_THRESHOLD = 0.92; // Skip if existing memory is >92% simila
 let lastRunAt = null;
 let isRunning = false;
 
+// Job tracking for async consolidation
+const jobs = new Map(); // jobId → { status, startedAt, result, error }
+
 const CONSOLIDATION_PROMPT = `You are analyzing a batch of agent memories from a shared brain system. These memories were stored by different AI agents working on different machines.
 
 Analyze the following memories and produce a JSON response with these fields:
@@ -187,11 +190,19 @@ async function consolidateBatch(points, clientId) {
   const batchIds = new Set(points.map(p => p.id));
 
   // Format memories for the LLM — wrapped in XML tags to resist prompt injection
+  const escapeXml = (str) => str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
   const memoriesText = points.map(p => {
     const pay = p.payload;
-    // Escape any XML-like tags in the memory content to prevent tag injection
-    const safeText = pay.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return `<memory id="${p.id}" type="${pay.type}" agent="${pay.source_agent}" client="${pay.client_id}" created="${pay.created_at}">\n${safeText}\n</memory>`;
+    const safeText = escapeXml(pay.text);
+    const safeAgent = escapeXml(pay.source_agent || '');
+    const safeClient = escapeXml(pay.client_id || '');
+    return `<memory id="${p.id}" type="${pay.type}" agent="${safeAgent}" client="${safeClient}" created="${pay.created_at}">\n${safeText}\n</memory>`;
   }).join('\n\n');
 
   const prompt = CONSOLIDATION_PROMPT + memoriesText;
@@ -199,9 +210,19 @@ async function consolidateBatch(points, clientId) {
 
   let result;
   try {
-    result = JSON.parse(responseText);
+    // Strip markdown code fences the LLM may wrap around the JSON
+    let jsonText = responseText.trim();
+    const fenceMatch = jsonText.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
+    if (fenceMatch) jsonText = fenceMatch[1].trim();
+    result = JSON.parse(jsonText);
   } catch (e) {
-    console.error('[consolidation] LLM returned invalid JSON:', responseText.slice(0, 200));
+    console.error('[consolidation] LLM returned invalid JSON:', responseText.slice(0, 300));
+    return { merged: 0, contradictions: 0, connections: 0, insights: 0 };
+  }
+
+  // Validate top-level structure
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+    console.error('[consolidation] LLM returned non-object JSON');
     return { merged: 0, contradictions: 0, connections: 0, insights: 0 };
   }
 
@@ -384,25 +405,33 @@ async function consolidateBatch(points, clientId) {
   if (result.entities?.length > 0 && isEntityStoreAvailable()) {
     for (const ent of result.entities) {
       try {
-        // Find or create the entity
-        let entity = await findEntity(ent.canonical_name);
+        // Normalize: trim whitespace, collapse internal spaces
+        const canonicalName = (ent.canonical_name || '').trim().replace(/\s+/g, ' ');
+        if (!canonicalName || canonicalName.length < 2) continue;
+
+        const entityType = ent.type || 'system';
+
+        // Find or create the entity (findEntity already does case-insensitive lookup)
+        let entity = await findEntity(canonicalName);
         let entityId;
         if (entity) {
           entityId = entity.id;
           // Bump mention count
-          await createEntity({ canonical_name: ent.canonical_name, entity_type: ent.type || entity.entity_type });
+          await createEntity({ canonical_name: entity.canonical_name, entity_type: entityType });
         } else {
-          const created = await createEntity({ canonical_name: ent.canonical_name, entity_type: ent.type || 'system' });
+          const created = await createEntity({ canonical_name: canonicalName, entity_type: entityType });
           entityId = created.id;
-          addToAliasCache(ent.canonical_name, entityId, ent.canonical_name, ent.type || 'system');
+          addToAliasCache(canonicalName, entityId, canonicalName, entityType);
         }
 
-        // Register aliases
+        // Register aliases (normalized)
         if (ent.aliases && entityId) {
-          for (const alias of ent.aliases) {
+          for (const rawAlias of ent.aliases) {
+            const alias = (rawAlias || '').trim().replace(/\s+/g, ' ');
+            if (!alias || alias.length < 2) continue;
             const aliasResult = await upsertAlias(entityId, alias);
             if (aliasResult.created) {
-              addToAliasCache(alias, entityId, ent.canonical_name, ent.type || 'system');
+              addToAliasCache(alias, entityId, canonicalName, entityType);
             }
           }
         }
@@ -447,6 +476,30 @@ async function cleanupOldEvents() {
   await updatePointPayload(ids, { active: false, expired_at: new Date().toISOString() });
   console.log(`[consolidation] Expired ${ids.length} old events (>${EVENT_TTL_DAYS} days, never accessed, medium/low importance)`);
   return ids.length;
+}
+
+export function startConsolidationJob() {
+  if (isRunning) {
+    return { status: 'skipped', reason: 'Consolidation already running' };
+  }
+  const jobId = crypto.randomUUID();
+  jobs.set(jobId, { status: 'running', startedAt: new Date().toISOString(), result: null, error: null });
+
+  // Run in background — don't await
+  runConsolidation().then(result => {
+    jobs.set(jobId, { status: 'complete', startedAt: jobs.get(jobId)?.startedAt, result, error: null });
+    // Auto-clean jobs older than 1 hour
+    setTimeout(() => jobs.delete(jobId), 3_600_000);
+  }).catch(err => {
+    jobs.set(jobId, { status: 'failed', startedAt: jobs.get(jobId)?.startedAt, result: null, error: err.message });
+    setTimeout(() => jobs.delete(jobId), 3_600_000);
+  });
+
+  return { status: 'started', job_id: jobId };
+}
+
+export function getJob(jobId) {
+  return jobs.get(jobId) || null;
 }
 
 export function getConsolidationStatus() {

@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { embed } from '../services/embedders/interface.js';
 import {
   upsertPoint, searchPoints, updatePointPayload,
-  findByPayload, computeEffectiveConfidence,
+  findByPayload, computeEffectiveConfidence, getPoint,
 } from '../services/qdrant.js';
 import {
   createEvent, upsertFact, upsertStatus, listEvents, listFacts, listStatuses, isStoreAvailable,
@@ -99,25 +99,22 @@ memoryRouter.post('/', async (req, res) => {
     let supersedesId = null;
 
     if (type === 'fact' && req.body.key) {
-      // Find existing active fact with same key
-      const existing = await findByPayload('type', 'fact', { active: true });
-      const match = existing.find(p => p.payload.key === req.body.key);
-      if (match) {
-        supersedesId = match.id;
-        // Mark old point as superseded
-        await updatePointPayload(match.id, {
+      // Find existing active fact with same key (targeted Qdrant query)
+      const matches = await findByPayload('key', req.body.key, { active: true, type: 'fact' }, 1);
+      if (matches.length > 0) {
+        supersedesId = matches[0].id;
+        await updatePointPayload(matches[0].id, {
           active: false,
           superseded_by: pointId,
           superseded_at: now,
         });
       }
     } else if (type === 'status' && req.body.subject) {
-      // Find existing active status with same subject
-      const existing = await findByPayload('type', 'status', { active: true });
-      const match = existing.find(p => p.payload.subject === req.body.subject);
-      if (match) {
-        supersedesId = match.id;
-        await updatePointPayload(match.id, {
+      // Find existing active status with same subject (targeted Qdrant query)
+      const matches = await findByPayload('subject', req.body.subject, { active: true, type: 'status' }, 1);
+      if (matches.length > 0) {
+        supersedesId = matches[0].id;
+        await updatePointPayload(matches[0].id, {
           active: false,
           superseded_by: pointId,
           superseded_at: now,
@@ -227,7 +224,8 @@ memoryRouter.post('/', async (req, res) => {
 // GET /memory/search — Semantic search via Qdrant
 memoryRouter.get('/search', async (req, res) => {
   try {
-    const { q, type, source_agent, client_id, category, limit, include_superseded, entity } = req.query;
+    const { q, type, source_agent, client_id, category, limit, include_superseded, entity, format } = req.query;
+    const isCompact = format === 'compact';
 
     if (!q) {
       return res.status(400).json({ error: 'Missing required query parameter: q' });
@@ -259,14 +257,33 @@ memoryRouter.get('/search', async (req, res) => {
     const rawResults = await searchPoints(vector, filter, Math.min(parseInt(limit) || 10, 100), nestedFilters);
 
     // Apply confidence decay and re-rank
+    const COMPACT_MAX = 200;
     const results = rawResults.map(r => {
       const effectiveConfidence = computeEffectiveConfidence(r.payload);
+      const p = r.payload;
+
+      if (isCompact) {
+        // Compact: only essential fields, truncated content
+        const text = p.text || '';
+        return {
+          id: r.id,
+          score: +r.score.toFixed(4),
+          effective_score: +(r.score * effectiveConfidence).toFixed(4),
+          type: p.type,
+          content: text.length > COMPACT_MAX ? text.slice(0, COMPACT_MAX) + '...' : text,
+          source_agent: p.source_agent,
+          client_id: p.client_id,
+          importance: p.importance,
+          created_at: p.created_at,
+        };
+      }
+
       return {
         id: r.id,
         score: r.score,
         confidence: effectiveConfidence,
         effective_score: +(r.score * effectiveConfidence).toFixed(4),
-        ...r.payload,
+        ...p,
       };
     });
 
@@ -336,6 +353,57 @@ memoryRouter.get('/query', async (req, res) => {
     });
   } catch (err) {
     console.error('[memory:query] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /memory/:id — Soft-delete a memory (mark inactive)
+memoryRouter.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    // Verify the point exists
+    let point;
+    try {
+      point = await getPoint(id);
+    } catch (e) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    if (!point || !point.payload) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    // Enforce agent identity: agent-scoped keys can only delete their own memories
+    if (req.authenticatedAgent && point.payload.source_agent !== req.authenticatedAgent) {
+      return res.status(403).json({
+        error: `Agent "${req.authenticatedAgent}" cannot delete memories from "${point.payload.source_agent}"`,
+      });
+    }
+
+    if (point.payload.active === false) {
+      return res.status(200).json({ id, already_inactive: true, message: 'Memory was already inactive' });
+    }
+
+    const now = new Date().toISOString();
+    await updatePointPayload(id, {
+      active: false,
+      deleted_at: now,
+      deleted_by: req.authenticatedAgent || 'admin',
+      deletion_reason: reason || null,
+    });
+
+    console.log(`[memory:delete] Memory ${id} soft-deleted by ${req.authenticatedAgent || 'admin'}${reason ? ': ' + reason : ''}`);
+
+    res.json({
+      id,
+      deleted: true,
+      deleted_at: now,
+      deleted_by: req.authenticatedAgent || 'admin',
+    });
+  } catch (err) {
+    console.error('[memory:delete] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

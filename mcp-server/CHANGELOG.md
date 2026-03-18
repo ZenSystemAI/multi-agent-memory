@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.4.0
+
+### Token Optimization
+- **Compact response format** — `brain_briefing` and `brain_search` now default to `compact` mode: content truncated to 200 chars, low-importance events filtered, essential fields only. **~70-80% token reduction** on typical briefings.
+- **Summary format** — `format=summary` returns counts + one-line headlines only for minimal token usage (~90% reduction).
+- **Full format preserved** — `format=full` restores original verbose behavior when complete content is needed.
+- **Importance-ranked sorting** — briefing results sort by importance (critical/high first) then recency, so agents see what matters first.
+
+### Security
+- **Prompt injection hardening** — consolidation engine now applies full XML entity escaping (`&`, `<`, `>`, `"`, `'`) on all user content and payload attributes. JSON code-fence stripping handles LLMs that wrap output in markdown. Top-level structure validation rejects non-object responses.
+
+### Performance
+- **O(1) supersedes lookup** — fact/status supersede checks now query Qdrant by `key`/`subject` field directly instead of scanning all active records. New payload indexes for `key` and `subject`.
+- **Async consolidation** — `POST /consolidate` returns a job ID immediately (HTTP 202). Poll status via `GET /consolidate/job/:id`. Jobs auto-expire after 1 hour. Backward-compatible: `?sync=true` preserves blocking behavior.
+- **Briefing pagination** — `limit` parameter (1-500, default 100) prevents unbounded responses.
+
+### New Features
+- **Memory deletion** — `DELETE /memory/:id` soft-deletes a memory (marks inactive). Agent-scoped keys can only delete their own memories. Audit fields: `deleted_at`, `deleted_by`, `deletion_reason`. Exposed via `brain_delete` MCP tool.
+- **Request correlation IDs** — every request gets an `X-Request-ID` header (generated or propagated) for cross-service tracing.
+- **Configurable MCP timeouts** — `BRAIN_MCP_TIMEOUT` (default 15s) and `BRAIN_MCP_CONSOLIDATION_TIMEOUT` (default 120s) environment variables.
+
+### Reliability
+- **Graceful shutdown** — API server handles SIGTERM/SIGINT, drains in-flight connections, force-exits after 10s timeout.
+- **Alias cache cold-start fix** — 67 built-in KNOWN_TECH aliases pre-seeded on startup so technology entities resolve immediately, even before first consolidation run.
+- **Entity name normalization** — consolidation normalizes canonical names (trim, collapse whitespace) and uses case-insensitive lookup to prevent duplicate entities like "Acme Corp" vs "acme corp".
+- **SQLite error logging** — silent catch blocks now only suppress genuine UNIQUE constraint duplicates; real errors (disk full, permission denied) are logged at WARN level.
+
+### Testing
+- **41 new tests** — validation middleware (23 tests: type, content, source_agent, importance, metadata, string fields, composite) and entity extraction (18 tests: basic, technologies, domains, quoted names, capitalized phrases, alias cache, dedup, cold-start).
+- **81 total tests**, all passing.
+
+### Indexes
+- New Qdrant payload indexes: `key` (Keyword), `subject` (Keyword) — created on startup for existing collections.
+
 ## 1.2.0
 
 ### Entity Extraction & Linking

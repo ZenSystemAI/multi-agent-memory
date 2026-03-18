@@ -292,6 +292,7 @@ curl "http://localhost:8084/memory/search?q=deployment&entity=Docker&limit=5" \
 | `category` | Filter by category |
 | `entity` | Filter to memories linked to this entity (by name or alias) |
 | `limit` | Max results (default 10) |
+| `format` | `compact` (default) truncates to 200 chars; `full` returns complete content + all metadata |
 | `include_superseded` | Set to `true` to include superseded memories |
 
 ### `GET /briefing` — Session briefing
@@ -301,7 +302,15 @@ curl "http://localhost:8084/briefing?since=2025-01-15T00:00:00Z&agent=claude-cod
   -H "X-Api-Key: YOUR_KEY"
 ```
 
-Returns categorized updates (events, facts, statuses, decisions) from all agents since the given timestamp. Excludes entries from the requesting agent by default. The summary includes `entities_mentioned` — a ranked list of entities that appeared in the briefing period.
+Returns categorized updates (events, facts, statuses, decisions) from all agents since the given timestamp. Excludes entries from the requesting agent by default. Results are sorted by importance (critical/high first), then recency.
+
+| Param | Description |
+|-------|-------------|
+| `since` | ISO 8601 timestamp (required) |
+| `agent` | Requesting agent — its entries are excluded |
+| `format` | `compact` (default): 200-char truncation, skips low-importance events. `summary`: counts + headlines only. `full`: complete content. |
+| `limit` | Max memories to retrieve (default 100, max 500) |
+| `include` | Set to `all` to include own entries |
 
 ### `GET /memory/query` — Structured query
 
@@ -343,10 +352,29 @@ Requires a structured storage backend (SQLite, Postgres, or Baserow). Returns a 
 ### `POST /consolidate` — Trigger LLM consolidation
 
 ```bash
+# Async (default) — returns job ID immediately
 curl -X POST http://localhost:8084/consolidate -H "X-Api-Key: YOUR_KEY"
+# {"status":"started","job_id":"a1b2c3d4-..."}
+
+# Poll job status
+curl http://localhost:8084/consolidate/job/a1b2c3d4-... -H "X-Api-Key: YOUR_KEY"
+
+# Sync (blocking) — waits for completion
+curl -X POST "http://localhost:8084/consolidate?sync=true" -H "X-Api-Key: YOUR_KEY"
 ```
 
-Runs the consolidation engine on demand. The engine finds duplicates to merge, contradictions to flag, connections between memories, cross-memory insights, and named entities to extract/normalize. The alias cache is refreshed after each run. Also runs automatically on a schedule when `CONSOLIDATION_ENABLED=true`.
+Runs the consolidation engine on demand. The engine finds duplicates to merge, contradictions to flag, connections between memories, cross-memory insights, and named entities to extract/normalize. The alias cache is refreshed after each run. Also runs automatically on a schedule when `CONSOLIDATION_ENABLED=true`. Jobs auto-expire after 1 hour.
+
+### `DELETE /memory/:id` — Delete a memory
+
+```bash
+curl -X DELETE http://localhost:8084/memory/a1b2c3d4-... \
+  -H "X-Api-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Contains incorrect information"}'
+```
+
+Soft-deletes a memory (marks it inactive). Agent-scoped API keys can only delete their own memories. The `reason` field is optional but logged for audit purposes.
 
 ### `POST /webhook/n8n` — n8n workflow logging
 
@@ -398,7 +426,7 @@ Uses fast-path regex extraction only (no LLM calls, no cost). Processes all acti
 
 ### MCP Server (Claude Code, Cursor, Windsurf)
 
-The MCP server exposes 7 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`, `brain_entities`.
+The MCP server exposes 8 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`, `brain_entities`, `brain_delete`.
 
 **Claude Code (`~/.claude.json`):**
 ```json
@@ -621,7 +649,7 @@ multi-agent-memory/
 │   ├── Dockerfile
 │   └── package.json
 ├── mcp-server/                 # MCP server for Claude/Cursor
-│   ├── src/index.js            # 7 tools: store, search, briefing, query, stats, consolidate, entities
+│   ├── src/index.js            # 8 tools: store, search, briefing, query, stats, consolidate, entities, delete
 │   └── package.json
 ├── adapters/
 │   ├── bash/                   # CLI adapter (curl + jq)

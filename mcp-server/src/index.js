@@ -8,6 +8,9 @@ import {
 
 const API_URL = process.env.BRAIN_API_URL || 'http://localhost:8084';
 const API_KEY = process.env.BRAIN_API_KEY;
+const DEFAULT_TIMEOUT = parseInt(process.env.BRAIN_MCP_TIMEOUT) || 15000;
+const CONSOLIDATION_TIMEOUT = parseInt(process.env.BRAIN_MCP_CONSOLIDATION_TIMEOUT) || 120000;
+
 if (!API_KEY) {
   console.error('[mcp] BRAIN_API_KEY environment variable is required');
   process.exit(1);
@@ -21,8 +24,10 @@ async function apiRequest(path, options = {}) {
     ...options.headers,
   };
 
+  const isConsolidation = path.startsWith('/consolidate') && options.method === 'POST';
+  const timeoutMs = options.timeout || (isConsolidation ? CONSOLIDATION_TIMEOUT : DEFAULT_TIMEOUT);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, headers, signal: controller.signal });
     if (!res.ok) {
@@ -36,7 +41,7 @@ async function apiRequest(path, options = {}) {
 }
 
 const server = new Server(
-  { name: 'shared-brain', version: '1.2.0' },
+  { name: 'shared-brain', version: '1.4.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -93,7 +98,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'brain_search',
-      description: 'Semantic search across all shared memories from all agents. Results are ranked by similarity * confidence (memories that haven\'t been accessed recently have lower confidence due to time decay). Superseded memories are excluded by default.',
+      description: 'Semantic search across all shared memories from all agents. Results are ranked by similarity * confidence. Returns compact format (truncated content) by default to save tokens.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -118,6 +123,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'Max results (default 10)',
           },
+          format: {
+            type: 'string',
+            enum: ['compact', 'full'],
+            description: 'compact (default): truncated to 200 chars, essential fields only. full: complete content + all metadata.',
+          },
           include_superseded: {
             type: 'boolean',
             description: 'Set to true to include superseded memories in results (default: false)',
@@ -128,7 +138,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'brain_briefing',
-      description: 'Get a session briefing: what happened since a given time across all agents. Use this at the start of a session to catch up on what other agents did. Excludes entries from the requesting agent by default.',
+      description: 'Get a session briefing: what happened since a given time across all agents. Excludes entries from the requesting agent by default. Returns compact format (truncated content) to save tokens — use format="full" only when you need complete content.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -144,6 +154,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             enum: ['all'],
             description: 'Set to "all" to include own entries in briefing',
+          },
+          format: {
+            type: 'string',
+            enum: ['compact', 'summary', 'full'],
+            description: 'Response detail level. compact (default): truncated to 200 chars, skips low-importance events. summary: counts + one-line headlines only (minimal tokens). full: complete content.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max memories to retrieve (default 100, max 500)',
           },
         },
         required: ['since'],
@@ -186,8 +205,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           action: {
             type: 'string',
-            enum: ['run', 'status'],
-            description: 'run=trigger consolidation now, status=check consolidation status. Default: run',
+            enum: ['run', 'status', 'job'],
+            description: 'run=trigger consolidation now (sync), status=check consolidation status, job=poll async job by job_id. Default: run',
+          },
+          job_id: {
+            type: 'string',
+            description: 'For action=job: the job ID returned by an async consolidation trigger',
           },
         },
       },
@@ -218,6 +241,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['action'],
+      },
+    },
+    {
+      name: 'brain_delete',
+      description: 'Soft-delete a memory by ID (marks it inactive). The memory remains in storage but is excluded from search results. Agent-scoped keys can only delete their own memories. Use this for compliance or to remove incorrect/sensitive memories.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          memory_id: {
+            type: 'string',
+            description: 'The UUID of the memory to delete',
+          },
+          reason: {
+            type: 'string',
+            description: 'Optional reason for deletion (logged for audit)',
+          },
+        },
+        required: ['memory_id'],
       },
     },
   ],
@@ -253,6 +294,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.source_agent) params.append('source_agent', args.source_agent);
         if (args.client_id) params.append('client_id', args.client_id);
         if (args.limit) params.append('limit', String(args.limit));
+        params.append('format', args.format || 'compact');
         if (args.include_superseded) params.append('include_superseded', 'true');
         result = await apiRequest(`/memory/search?${params}`);
         break;
@@ -262,6 +304,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const params = new URLSearchParams({ since: args.since });
         if (args.agent) params.append('agent', args.agent);
         if (args.include) params.append('include', args.include);
+        params.append('format', args.format || 'compact');
+        if (args.limit) params.append('limit', String(args.limit));
         result = await apiRequest(`/briefing?${params}`);
         break;
       }
@@ -285,9 +329,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'brain_consolidate':
         if (args.action === 'status') {
           result = await apiRequest('/consolidate/status');
+        } else if (args.action === 'job' && args.job_id) {
+          result = await apiRequest(`/consolidate/job/${encodeURIComponent(args.job_id)}`);
         } else {
-          result = await apiRequest('/consolidate', { method: 'POST' });
+          // Default: async mode (returns job_id); use ?sync=true for blocking
+          result = await apiRequest('/consolidate?sync=true', { method: 'POST' });
         }
+        break;
+
+      case 'brain_delete':
+        if (!args.memory_id) {
+          return { content: [{ type: 'text', text: 'Error: memory_id is required' }], isError: true };
+        }
+        result = await apiRequest(`/memory/${encodeURIComponent(args.memory_id)}`, {
+          method: 'DELETE',
+          body: JSON.stringify({ reason: args.reason }),
+        });
         break;
 
       case 'brain_entities': {

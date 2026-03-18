@@ -42,6 +42,15 @@ let aliasCache = new Map();
 
 export function loadAliasCache(entries) {
   aliasCache = new Map();
+  // Pre-seed with KNOWN_TECH so tech entities always resolve, even before first consolidation
+  for (const [alias, canonical] of Object.entries(KNOWN_TECH)) {
+    aliasCache.set(alias.toLowerCase(), {
+      entityId: null, // no DB id yet — extraction will still match by canonical name
+      canonicalName: canonical,
+      entityType: 'technology',
+    });
+  }
+  // Overlay DB aliases (these take precedence — they have real entity IDs)
   for (const e of entries) {
     aliasCache.set(e.alias.toLowerCase(), {
       entityId: e.entity_id,
@@ -49,7 +58,7 @@ export function loadAliasCache(entries) {
       entityType: e.entity_type,
     });
   }
-  console.log(`[entities] Alias cache loaded: ${aliasCache.size} entries`);
+  console.log(`[entities] Alias cache loaded: ${aliasCache.size} entries (${entries.length} from DB, ${Object.keys(KNOWN_TECH).length} built-in)`);
 }
 
 export function addToAliasCache(alias, entityId, canonicalName, entityType) {

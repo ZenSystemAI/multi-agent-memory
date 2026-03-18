@@ -30,6 +30,14 @@ jobs:
         run: cd mcp-server && npm install
 
       - name: Publish MCP server
-        run: cd mcp-server && npm publish --access public
+        run: |
+          cd mcp-server
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view @zensystemai/multi-agent-memory-mcp@$LOCAL_VERSION version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$LOCAL_VERSION" ]; then
+            echo "v$LOCAL_VERSION already published to npm — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -30,6 +30,25 @@
 
 Born from a production setup where [OpenClaw](https://github.com/openclaw/openclaw) agents, Claude Code, and n8n workflows needed to share memory across separate machines. Nothing existed that did this well, so we built it.
 
+### What's New in v2.0
+
+- **Per-Client Knowledge Base** — Fingerprint-based client identification with accent normalization. One tool call (`brain_client`) returns everything known about a client: brand, strategy, meetings, content, technical details, relationships. Fuzzy name resolution ("JL" resolves to "jetloans").
+- **Gemini Embedding 2** — Task-type-aware embeddings at 3072 dimensions. Uses `RETRIEVAL_DOCUMENT` for storage, `RETRIEVAL_QUERY` for search. Matryoshka support for flexible dimensionality (3072/1536/768).
+- **Import/Export** — Full backup and migration support. Export all memories as JSON, import with automatic deduplication. Never lose data when switching embedding providers again.
+- **Webhook Notifications** — Real-time dispatch when memories are stored, superseded, or deleted. Fire-and-forget to any HTTP endpoint.
+- **Entity Relationship Graph** — Track how entities connect through co-occurrence. Interactive D3.js visualization with dark theme, force-directed layout, search, and PNG export — a showpiece you can share with clients.
+- **Auto-Resolve Client Context** — Memories without explicit client_id are automatically tagged using fingerprint matching against the content.
+- **Smarter Consolidation** — The 6-hour LLM pass now reclassifies knowledge categories and infers entity relationship types (contact_of, same_owner, uses, works_on, competitor_of).
+
+<p align="center">
+  <img src=".github/shared memory.jpg" alt="Shared Memory Architecture" width="340" />
+  <img src=".github/dual-database.jpg" alt="Dual Database Design" width="340" />
+</p>
+<p align="center">
+  <img src=".github/4 memory type.jpg" alt="4 Memory Types" width="340" />
+  <img src=".github/memory life cycle flow.jpg" alt="Memory Lifecycle" width="340" />
+</p>
+
 ## The Problem
 
 You run multiple AI agents — Claude Code for development, OpenClaw for autonomous tasks, n8n for automation. They each maintain their own context and forget everything between sessions. When one agent discovers something important, the others never learn about it.
@@ -45,7 +64,8 @@ cd multi-agent-memory
 
 # 2. Configure
 cp .env.example .env
-# Edit .env — set BRAIN_API_KEY, OPENAI_API_KEY, and QDRANT_API_KEY
+# Edit .env — set BRAIN_API_KEY and QDRANT_API_KEY
+# For embeddings: GEMINI_API_KEY (free tier) or OPENAI_API_KEY
 
 # 3. Start services
 docker compose up -d
@@ -784,6 +804,13 @@ multi-agent-memory/
 
 ## Roadmap
 
+**Shipped in v2.0:**
+- ~~Entity relationships + graph~~ — Done
+- ~~Import/Export~~ — Done
+- ~~Webhook notifications~~ — Done
+- ~~Client knowledge base~~ — Done
+
+**Coming next:**
 - **Web dashboard** — Browse, search, and manage memories visually
 - **Python SDK** — `pip install multi-agent-memory`
 - **Automatic memory capture** — System learns what's worth remembering vs what's noise

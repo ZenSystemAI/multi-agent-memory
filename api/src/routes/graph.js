@@ -145,17 +145,46 @@ async function findCoOccurringEntities(entityId, limit = 40) {
   try {
     const store = _getStoreInstance();
 
-    // Direct DB path (SQLite) — most efficient
+    // Postgres path
+    if (store?.pool) {
+      return findCoOccurringPostgres(store.pool, entityId, limit);
+    }
+
+    // SQLite path
     if (store?.db) {
       return findCoOccurringDirect(store.db, entityId, limit);
     }
 
-    // Fallback: use interface-level getEntityMemories
-    return await findCoOccurringViaInterface(entityId, limit);
+    return [];
   } catch (err) {
     console.error('[graph] findCoOccurringEntities error:', err.message);
     return [];
   }
+}
+
+/**
+ * Postgres query for co-occurring entities.
+ */
+async function findCoOccurringPostgres(pool, entityId, limit) {
+  const result = await pool.query(`
+    SELECT eml2.entity_id, e.canonical_name, e.entity_type, e.mention_count,
+           COUNT(DISTINCT eml2.memory_id) as shared_count
+    FROM entity_memory_links eml1
+    JOIN entity_memory_links eml2 ON eml1.memory_id = eml2.memory_id AND eml2.entity_id != $1
+    JOIN entities e ON e.id = eml2.entity_id
+    WHERE eml1.entity_id = $1
+    GROUP BY eml2.entity_id, e.canonical_name, e.entity_type, e.mention_count
+    ORDER BY shared_count DESC
+    LIMIT $2
+  `, [entityId, limit]);
+
+  return result.rows.map(r => ({
+    entity_id: r.entity_id,
+    canonical_name: r.canonical_name,
+    entity_type: r.entity_type,
+    mention_count: r.mention_count || 1,
+    shared_count: parseInt(r.shared_count),
+  }));
 }
 
 /**

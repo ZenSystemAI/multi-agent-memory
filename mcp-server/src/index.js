@@ -285,6 +285,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['client'],
       },
     },
+    {
+      name: 'brain_export',
+      description: 'Export shared memories as JSON for backup or migration. Returns all memory payloads (no vectors). Use before switching embedding providers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          client_id: { type: 'string', description: 'Filter by client (optional)' },
+          type: { type: 'string', enum: ['event', 'fact', 'decision', 'status'], description: 'Filter by type (optional)' },
+          since: { type: 'string', description: 'ISO 8601 timestamp — only memories after this time (optional)' },
+        },
+      },
+    },
+    {
+      name: 'brain_import',
+      description: 'Import memories from JSON (e.g. from a brain_export backup). Re-embeds with current provider, deduplicates by content hash. Max 500 records per call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          data: { type: 'array', description: 'Array of memory objects to import (same format as brain_export output)', items: { type: 'object' } },
+        },
+        required: ['data'],
+      },
+    },
   ],
 }));
 
@@ -403,6 +426,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (format) params.set('format', format);
         const qs = params.toString() ? `?${params.toString()}` : '';
         result = await apiRequest(`/client/${encodeURIComponent(client)}${qs}`);
+        break;
+      }
+
+      case 'brain_export': {
+        const exportParams = new URLSearchParams();
+        if (args.client_id) exportParams.set('client_id', args.client_id);
+        if (args.type) exportParams.set('type', args.type);
+        if (args.since) exportParams.set('since', args.since);
+        const exportQs = exportParams.toString() ? `?${exportParams.toString()}` : '';
+        result = await apiRequest(`/export${exportQs}`);
+        break;
+      }
+
+      case 'brain_import': {
+        result = await apiRequest('/export/import', {
+          method: 'POST',
+          body: JSON.stringify({ data: args.data }),
+        });
         break;
       }
 

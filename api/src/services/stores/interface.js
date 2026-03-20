@@ -112,3 +112,8 @@ export async function loadAllAliases() {
 export async function getEntityStats() {
   return requireStore().getEntityStats();
 }
+
+// Direct store access (used by graph visualization for co-occurrence queries)
+export function _getStoreInstance() {
+  return store;
+}

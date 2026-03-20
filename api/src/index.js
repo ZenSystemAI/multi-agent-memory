@@ -10,6 +10,7 @@ import { consolidationRouter } from './routes/consolidation.js';
 import { entitiesRouter } from './routes/entities.js';
 import { clientRouter } from './routes/client.js';
 import { exportRouter } from './routes/export.js';
+import { graphRouter } from './routes/graph.js';
 import { initQdrant, ensureEntityIndex } from './services/qdrant.js';
 import { initEmbeddings } from './services/embedders/interface.js';
 import { initStore, isEntityStoreAvailable, loadAllAliases } from './services/stores/interface.js';
@@ -54,6 +55,7 @@ app.use('/consolidate', consolidationRouter);
 app.use('/entities', entitiesRouter);
 app.use('/client', clientRouter);
 app.use('/export', exportRouter);
+app.use('/graph', graphRouter);
 
 async function start() {
   try {

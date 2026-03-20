@@ -100,6 +100,23 @@ export class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_eml_memory ON entity_memory_links(memory_id);
     `);
 
+    // Entity relationships table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_relationships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_entity_id INTEGER REFERENCES entities(id),
+        target_entity_id INTEGER REFERENCES entities(id),
+        relationship_type TEXT NOT NULL DEFAULT 'co_occurrence',
+        strength INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(source_entity_id, target_entity_id, relationship_type)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_er_source ON entity_relationships(source_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_er_target ON entity_relationships(target_entity_id);
+    `);
+
     // Unique index for entity_memory_links (idempotent linking)
     try {
       this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_eml_unique ON entity_memory_links(entity_id, memory_id, role)`);

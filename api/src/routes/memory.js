@@ -12,6 +12,7 @@ import {
 import { scrubCredentials, scrubObject } from '../services/scrub.js';
 import { extractEntities, linkExtractedEntities } from '../services/entities.js';
 import { validateMemoryInput, MAX_OBSERVED_BY } from '../middleware/validate.js';
+import { dispatchNotification } from '../services/notifications.js';
 
 export const memoryRouter = Router();
 
@@ -116,6 +117,7 @@ memoryRouter.post('/', async (req, res) => {
           superseded_by: pointId,
           superseded_at: now,
         });
+        dispatchNotification('memory_superseded', { id: matches[0].id, ...matches[0].payload });
       }
     } else if (type === 'status' && req.body.subject) {
       // Find existing active status with same subject (targeted Qdrant query)
@@ -127,6 +129,7 @@ memoryRouter.post('/', async (req, res) => {
           superseded_by: pointId,
           superseded_at: now,
         });
+        dispatchNotification('memory_superseded', { id: matches[0].id, ...matches[0].payload });
       }
     }
 
@@ -168,6 +171,9 @@ memoryRouter.post('/', async (req, res) => {
     // Embed and store in Qdrant
     const vector = await embed(cleanContent);
     await upsertPoint(pointId, vector, payload);
+
+    // Dispatch webhook notification for new memory
+    dispatchNotification('memory_stored', { id: pointId, ...payload });
 
     // Link entities in structured store (fire-and-forget — don't block response)
     if (isEntityStoreAvailable() && extractedEntities.length > 0) {
@@ -407,6 +413,8 @@ memoryRouter.delete('/:id', async (req, res) => {
       deleted_by: req.authenticatedAgent || 'admin',
       deletion_reason: reason || null,
     });
+
+    dispatchNotification('memory_deleted', { id, ...point.payload });
 
     console.log(`[memory:delete] Memory ${id} soft-deleted by ${req.authenticatedAgent || 'admin'}${reason ? ': ' + reason : ''}`);
 

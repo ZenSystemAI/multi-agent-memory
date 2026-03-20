@@ -1,0 +1,35 @@
+const WEBHOOK_URLS = (process.env.WEBHOOK_NOTIFY_URLS || '')
+  .split(',')
+  .map(u => u.trim())
+  .filter(u => u.length > 0);
+
+export function buildNotificationPayload(event, memory) {
+  return {
+    event,
+    memory: {
+      id: memory.id,
+      type: memory.type,
+      client_id: memory.client_id || 'global',
+      knowledge_category: memory.knowledge_category || 'general',
+      content_preview: (memory.content || memory.text || '').slice(0, 200),
+      source_agent: memory.source_agent,
+      importance: memory.importance || 'medium',
+      created_at: memory.created_at,
+    },
+  };
+}
+
+export function dispatchNotification(event, memory) {
+  if (WEBHOOK_URLS.length === 0) return;
+  const payload = buildNotificationPayload(event, memory);
+
+  for (const url of WEBHOOK_URLS) {
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(err => {
+      console.warn(`[notifications] Webhook failed for ${url}: ${err.message}`);
+    });
+  }
+}

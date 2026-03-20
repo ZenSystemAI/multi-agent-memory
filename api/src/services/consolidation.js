@@ -4,6 +4,7 @@ import { scrollPoints, updatePointPayload, upsertPoint, findByPayload, searchPoi
 import { embed } from './embedders/interface.js';
 import { isEntityStoreAvailable, createEntity, findEntity, linkEntityToMemory, upsertAlias, loadAllAliases } from './stores/interface.js';
 import { loadAliasCache, addToAliasCache } from './entities.js';
+import { dispatchNotification } from './notifications.js';
 
 const SEMANTIC_DEDUP_THRESHOLD = 0.92; // Skip if existing memory is >92% similar
 
@@ -313,6 +314,11 @@ async function consolidateBatch(points, clientId) {
               superseded_by: mergedId,
               superseded_at: now,
             });
+            // Find the source point in the batch to get its payload for the notification
+            const sourcePoint = points.find(p => p.id === sourceId);
+            if (sourcePoint) {
+              dispatchNotification('memory_superseded', { id: sourceId, ...sourcePoint.payload });
+            }
           } catch (e) {
             // Source memory might not exist — skip
           }

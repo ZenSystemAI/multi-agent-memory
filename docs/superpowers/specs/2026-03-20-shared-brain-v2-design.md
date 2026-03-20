@@ -288,12 +288,12 @@ Total tools: 11 (7 existing + 4 new)
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /memory/client/:clientId` | Client knowledge briefing |
-| `GET /clients/fingerprints` | Fetch all client fingerprints (for Fireflies/workflows) |
-| `GET /memory/export` | Export memories as JSON |
-| `POST /memory/import` | Import memories from JSON |
-| `GET /memory/graph/:entity` | Entity graph query |
-| `GET /memory/graph/:entity/html` | Interactive graph visualization |
+| `GET /client/:clientId` | Client knowledge briefing |
+| `GET /client/fingerprints` | Fetch all client fingerprints (for Fireflies/workflows) |
+| `GET /export` | Export memories as JSON |
+| `POST /export/import` | Import memories from JSON |
+| `GET /graph/:entity` | Entity graph query |
+| `GET /graph/:entity/html` | Interactive graph visualization |
 
 ## Files Changed/Created
 

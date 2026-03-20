@@ -113,7 +113,6 @@ export async function getEntityStats() {
   return requireStore().getEntityStats();
 }
 
-<<<<<<< HEAD
 export async function createRelationship(sourceId, targetId, type) {
   return requireStore().createRelationship(sourceId, targetId, type);
 }
@@ -124,9 +123,9 @@ export async function getRelationships(entityId, minStrength) {
 
 export async function listRelationships(filters) {
   return requireStore().listRelationships(filters);
-=======
+}
+
 // Direct store access (used by graph visualization for co-occurrence queries)
 export function _getStoreInstance() {
   return store;
->>>>>>> worktree-agent-a801b191
 }

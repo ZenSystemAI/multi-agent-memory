@@ -187,11 +187,19 @@ This means you get both "find memories similar to X" *and* "give me all facts wi
 │                        Memory API (Express)                               │
 │  POST /memory  GET /memory/search  GET /briefing  GET /stats              │
 │  GET /memory/query  POST /webhook/n8n  POST /consolidate  GET /entities   │
+│  GET /client/:name  GET /export  POST /import  GET /graph                 │
 ├──────────────────────┬────────────────────────────────────────────────────┤
 │   Embedding Layer    │            LLM Layer                               │
+<<<<<<< HEAD
 │  ┌────────┐ ┌──────┐ ┌──────┐│  ┌────────┐ ┌───────────┐ ┌──────┐ ┌──────┐│
 │  │ OpenAI │ │Gemini│ │Ollama││  │ OpenAI │ │ Anthropic │ │Gemini│ │Ollama││
 │  └────────┘ └──────┘ └──────┘│  └────────┘ └───────────┘ └──────┘ └──────┘│
+=======
+│  ┌────────┐ ┌──────┐│  ┌────────┐ ┌───────────┐ ┌──────┐ ┌──────┐      │
+│  │ OpenAI │ │Gemini││  │ OpenAI │ │ Anthropic │ │Gemini│ │Ollama│      │
+│  │        │ │Ollama││  └────────┘ └───────────┘ └──────┘ └──────┘      │
+│  └────────┘ └──────┘│                                                    │
+>>>>>>> worktree-agent-a1f30793
 ├──────────────────────┴────────────────────────────────────────────────────┤
 │                          Storage Layer                                    │
 │  ┌────────────────────┐  ┌────────┐ ┌────────┐ ┌───────┐                │
@@ -245,6 +253,7 @@ Entities are automatically extracted from the content and stored in both the Qdr
 | `category` | No | `semantic`, `episodic`, or `procedural`. Default: `episodic` |
 | `importance` | No | `critical`, `high`, `medium`, or `low`. Default: `medium` |
 | `key` | No | For facts: unique key enabling upsert |
+| `knowledge_category` | No | `brand`, `strategy`, `meeting`, `content`, `technical`, `relationship`, or `general`. Auto-classified during consolidation if not set. |
 | `subject` | No | For statuses: what system this status is about |
 | `status_value` | No | For statuses: the current status string |
 
@@ -412,6 +421,63 @@ Entity types: `client`, `person`, `system`, `service`, `domain`, `technology`, `
 
 Requires SQLite or Postgres structured storage backend. Baserow users get entity data in Qdrant payloads but not the entity graph endpoints.
 
+### `GET /client/:name` — Client briefing
+
+```bash
+curl "http://localhost:8084/client/acme-corp" -H "X-Api-Key: YOUR_KEY"
+```
+
+Returns a comprehensive client briefing: all memories tagged with the resolved client_id, grouped by knowledge_category (brand, strategy, meeting, content, technical, relationship, general). Supports fuzzy name resolution — "acme", "Acme Corp", and "acme-corp" all resolve to the same client.
+
+| Param | Description |
+|-------|-------------|
+| `name` | Client name or slug (fuzzy matched against fingerprints) |
+| `category` | Filter by knowledge_category |
+| `limit` | Max memories per category (default 20) |
+
+### `GET /export` — Export memories
+
+```bash
+curl "http://localhost:8084/export?format=json" -H "X-Api-Key: YOUR_KEY" -o backup.json
+```
+
+Exports all active memories as JSON. Useful for backup before embedding provider migration or system upgrades.
+
+| Param | Description |
+|-------|-------------|
+| `format` | `json` (default) |
+| `client_id` | Filter export to a specific client |
+| `type` | Filter by memory type |
+
+### `POST /import` — Import memories
+
+```bash
+curl -X POST "http://localhost:8084/import" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: YOUR_KEY" \
+  -d @backup.json
+```
+
+Imports memories from a previous export. Handles deduplication (skips exact hash matches) and batch processes embeddings. Safe for embedding provider migration — re-embeds all content with the current provider.
+
+### `GET /graph` — Entity relationship graph
+
+```bash
+# JSON data
+curl "http://localhost:8084/graph?format=json" -H "X-Api-Key: YOUR_KEY"
+
+# Interactive D3.js visualization (open in browser)
+# http://localhost:8084/graph
+```
+
+Returns entity relationships as a node/edge graph. Co-occurrence relationships are automatically detected during consolidation. The HTML format serves an interactive D3.js force-directed visualization with dark theme, search, and zoom.
+
+| Param | Description |
+|-------|-------------|
+| `format` | `html` (default, interactive viz) or `json` (raw data) |
+| `entity` | Center graph on a specific entity |
+| `depth` | Relationship traversal depth (default 2) |
+
 ### Backfill Existing Memories
 
 After upgrading to v1.2.0, run the backfill script once to extract entities from existing memories:
@@ -445,7 +511,7 @@ docker exec shared-brain-api node scripts/reindex-embeddings.js
 
 ### MCP Server (Claude Code, Cursor, Windsurf)
 
-The MCP server exposes 8 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`, `brain_entities`, `brain_delete`.
+The MCP server exposes 12 tools: `brain_store`, `brain_search`, `brain_briefing`, `brain_query`, `brain_stats`, `brain_consolidate`, `brain_entities`, `brain_delete`, `brain_client`, `brain_export`, `brain_import`, `brain_graph`.
 
 **Claude Code (`~/.claude.json`):**
 ```json
@@ -553,8 +619,13 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `EMBEDDING_PROVIDER` | `openai` | `openai`, `gemini`, or `ollama` |
 | `OPENAI_API_KEY` | — | Required when using OpenAI embeddings |
 | `GEMINI_API_KEY` | — | Required when using Gemini embeddings |
+<<<<<<< HEAD
 | `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-2-preview` | Gemini embedding model name |
 | `GEMINI_EMBEDDING_DIMS` | `3072` | Output dimensions (3072, 1536, or 768 via Matryoshka) |
+=======
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-exp-03-07` | Gemini embedding model |
+| `GEMINI_EMBEDDING_DIMS` | `3072` | Output dimensions (3072, 1536, or 768 — Matryoshka support) |
+>>>>>>> worktree-agent-a1f30793
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model name |
 
@@ -589,6 +660,24 @@ Entity graph tables (entities, aliases, memory links) are automatically created 
 | `DECAY_FACTOR` | `0.98` | Confidence decay per day without access (0.98 = 2%/day) |
 
 Only affects `fact` and `status` types. Events and decisions don't decay.
+
+### Client Resolver
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BASEROW_CLIENTS_TABLE_ID` | — | Baserow table ID containing client records with `client_fingerprints` field |
+| `BASEROW_CLIENT_TOKEN` | — | API token for client table access. Falls back to `BASEROW_API_KEY` if not set |
+
+When configured, the client resolver auto-tags `client_id` on incoming memories by matching content against client fingerprints (accent-normalized, fuzzy). This enables automatic client attribution without agents needing to specify `client_id` explicitly.
+
+### Webhook Notifications
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_URLS` | — | Comma-separated webhook URLs for memory event notifications |
+| `WEBHOOK_EVENTS` | `store,supersede,delete` | Which events trigger notifications |
+
+When configured, the system dispatches real-time HTTP POST notifications to the specified URLs on memory store, supersede, and delete events. Useful for triggering n8n workflows, Slack alerts, or external dashboards.
 
 ## Deployment
 
@@ -644,12 +733,19 @@ multi-agent-memory/
 │   │   │   ├── stats.js        # Memory + entity health dashboard
 │   │   │   ├── consolidation.js# Consolidation trigger/status
 │   │   │   ├── webhook.js      # n8n webhook with entity extraction
-│   │   │   └── entities.js     # Entity graph endpoints
+│   │   │   ├── entities.js     # Entity graph endpoints
+│   │   │   ├── client.js       # Client briefing endpoint
+│   │   │   ├── export.js       # Import/export endpoints
+│   │   │   └── graph.js        # Entity relationship graph + D3.js viz
+│   │   ├── templates/
+│   │   │   └── graph.html      # Interactive D3.js force-directed graph
 │   │   └── services/
 │   │       ├── qdrant.js       # Vector store + entity index
 │   │       ├── scrub.js        # Credential scrubbing
 │   │       ├── entities.js     # Entity extraction, alias cache, linking
 │   │       ├── consolidation.js# LLM consolidation + entity refinement
+│   │       ├── client-resolver.js # Fingerprint-based client identification
+│   │       ├── notifications.js# Webhook notification dispatch
 │   │       ├── embedders/      # Pluggable embedding providers
 │   │       │   ├── interface.js
 │   │       │   ├── openai.js
@@ -673,7 +769,7 @@ multi-agent-memory/
 │   ├── Dockerfile
 │   └── package.json
 ├── mcp-server/                 # MCP server for Claude/Cursor
-│   ├── src/index.js            # 8 tools: store, search, briefing, query, stats, consolidate, entities, delete
+│   ├── src/index.js            # 12 tools: store, search, briefing, query, stats, consolidate, entities, delete, client, export, import, graph
 │   └── package.json
 ├── adapters/
 │   ├── bash/                   # CLI adapter (curl + jq)
@@ -689,12 +785,10 @@ multi-agent-memory/
 ## Roadmap
 
 - **Web dashboard** — Browse, search, and manage memories visually
-- **Entity relationships** — Typed edges between entities (e.g., "Client X uses Technology Y")
 - **Python SDK** — `pip install multi-agent-memory`
 - **Automatic memory capture** — System learns what's worth remembering vs what's noise
 - **Multi-collection support** — Isolated memory spaces per project or team
-- **Real-time notifications** — SSE/WebSocket for agents to subscribe to memory updates
-- **Memory import/export** — Bulk operations for backup and migration
+- **SSE/WebSocket subscriptions** — Real-time streaming for agents to subscribe to memory updates
 
 ## Contributing
 
